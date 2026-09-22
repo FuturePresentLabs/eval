@@ -30,8 +30,9 @@ was still nowhere shared to put them.
 
 `eval` is that shared place. `cadbench` migrated onto it cleanly (compiled
 on the first try, zero test regressions) — its design was already the
-better-factored one; `pcbbench` is a real migration onto that design, not
-a re-point.
+better-factored one; `pcbbench` did a real migration onto that design
+(10/10 tests pass, plus a real behavior fix along the way: its CLI
+previously always exited 0 regardless of score).
 
 ## What this deliberately does not hold
 
