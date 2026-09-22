@@ -1,0 +1,30 @@
+# eval -- shared harness scaffolding for typed-decision-driven design-agent
+# benchmarks (cadbench, pcbbench, and future siblings like dfmbench/cambench).
+#
+# Provides the mechanism every one of these harnesses independently
+# reinvented: a Task<C>/Criterion<C> TOML schema, a Verdict/ScoreReport
+# shape, a Backend trait for driving a subprocess CLI, and a generalized
+# "every shipped task parses and has a sound rubric" test helper.
+#
+# Deliberately does NOT hold any domain content (no CAD/EDA-specific Check
+# variants, no reusable component/subcircuit libraries) -- content lives in
+# each consuming repo, or, per an explicit steer from FPL leadership,
+# probably outside this ecosystem entirely for IP reasons (parallel to how
+# Eurorack panel data and pedalkernel-pro's own content stay out of
+# legion-of-bom). This crate is mechanism only.
+[workspace]
+resolver = "2"
+members = ["crates/eval"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/FuturePresentLabs/eval"
+authors = ["Future Present Labs"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"

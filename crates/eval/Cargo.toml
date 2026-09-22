@@ -1,0 +1,14 @@
+[package]
+name = "eval"
+description = "Shared harness scaffolding for typed-decision-driven design-agent benchmarks: Task/Criterion schema, Verdict/ScoreReport, a Backend trait, and a generalized task-file soundness test. Mechanism only, no domain content."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
