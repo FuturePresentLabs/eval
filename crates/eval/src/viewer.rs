@@ -497,10 +497,11 @@ pub fn render_prompt_page(
         .as_ref()
         .and_then(|path| path.strip_prefix(&task.work_dir).ok())
         .map(|path| path.to_string_lossy().into_owned());
-    let model = final_stl.map_or_else(|| "<div class=model-empty><strong>Final STL not recorded</strong><p>The prompt page is available, but this run did not produce an STL artifact.</p></div>".to_owned(), |relative| {
+    let model = final_stl.map_or_else(|| "<div class=model-empty><strong>Final STL not recorded</strong><p>This run did not produce an STL artifact.</p></div>".to_owned(), |relative| {
         let href = format!("/artifact/{model_id}/{}/{index}/{relative}", kind.id());
         format!("<div id=stl-viewer data-src='{href}' data-color='{}' data-metalness='{}' data-roughness='{}' aria-label='Interactive final STL viewer' aria-busy=true>Loading model…</div><footer><small>Drag to rotate · scroll to zoom</small> · <a href='{href}' download>Download STL</a></footer>", pbr.0, pbr.1, pbr.2)
     });
+    let inspector = artifact_inspector(model_id, kind, index, &task.work_dir, &artifacts, model);
     let options = report
         .tasks
         .iter()
@@ -540,7 +541,7 @@ pub fn render_prompt_page(
     );
     let rigor = rigor_ledger(task);
     Some(format!(
-        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content='light dark'><title>{} · {}</title><style>{CSS}</style></head><body><header class=container><nav><ul><li><a href='/#benchmark-{}'>← Leaderboard</a></li><li><strong>{}</strong></li></ul><ul><li><small>{} · {}</small></li></ul></nav></header><main class=container><nav aria-label='Prompt carousel'><ul><li>{}</li></ul><ul><li><label>Prompt {}/{}<select id=prompt-select>{options}</select></label></li></ul><ul><li>{}</li></ul></nav><hgroup><p>{} · Prompt {}/{}</p><h1>{}</h1></hgroup><p><mark>{}</mark> &nbsp; {passed}/{deterministic} deterministic &nbsp; {proxies} proxy &nbsp; {reviews} review</p><section class=grid><article><header><h2>Final model</h2></header>{material}{duplicate_warning}{model}</article><article><header><h2>Prompt</h2></header>{prompt}</article></section><section><h2>Rigor ledger</h2>{rigor}</section><section><h2>Checks</h2><p>Pass/fail rows contribute to the task score. Review rows remain unresolved; proxy rows are disclosed separately.</p><div class=overflow-auto><table class=striped><thead><tr><th>Result</th><th>Check</th><th>Requirement</th><th>Evidence</th></tr></thead><tbody>{checks}</tbody></table></div></section></main><script type=module>{PROMPT_PAGE_JS}</script></body></html>",
+        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content='light dark'><title>{} · {}</title><style>{CSS}{PROMPT_INSPECTOR_CSS}</style></head><body><header class=container><nav><ul><li><a href='/#benchmark-{}'>← Leaderboard</a></li><li><strong>{}</strong></li></ul><ul><li><small>{} · {}</small></li></ul></nav></header><main class=container><nav aria-label='Prompt carousel'><ul><li>{}</li></ul><ul><li><label>Prompt {}/{}<select id=prompt-select>{options}</select></label></li></ul><ul><li>{}</li></ul></nav><hgroup><p>{} · Prompt {}/{}</p><h1>{}</h1></hgroup><p><mark>{}</mark> &nbsp; {passed}/{deterministic} deterministic &nbsp; {proxies} proxy &nbsp; {reviews} review</p><section>{inspector}</section><section class=grid><article><header><h2>Manufacturing context</h2></header>{material}{duplicate_warning}</article><article><header><h2>Prompt</h2></header>{prompt}</article></section><section><h2>Rigor ledger</h2>{rigor}</section><section><h2>Checks</h2><p>Pass/fail rows contribute to the task score. Review rows remain unresolved; proxy rows are disclosed separately.</p><div class=overflow-auto><table class=striped><thead><tr><th>Result</th><th>Check</th><th>Requirement</th><th>Evidence</th></tr></thead><tbody>{checks}</tbody></table></div></section></main><script type=module>{PROMPT_PAGE_JS}</script></body></html>",
         esc(&task_id),
         kind.name(),
         kind.id(),
@@ -557,6 +558,58 @@ pub fn render_prompt_page(
         esc(&task_id),
         state.1
     ))
+}
+
+fn artifact_inspector(
+    model_id: &str,
+    kind: BenchmarkKind,
+    index: usize,
+    work_dir: &std::path::Path,
+    artifacts: &[std::path::PathBuf],
+    model: String,
+) -> String {
+    let mut views: Vec<(String, String)> = Vec::new();
+    if final_stl_path(work_dir).is_some() {
+        views.push(("3D model".into(), model));
+    }
+    let mut paths = artifacts.iter().collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        let name = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Artifact");
+        let lower = name.to_ascii_lowercase();
+        let relative = path
+            .strip_prefix(work_dir)
+            .expect("artifact below work dir");
+        let relative_text = relative.to_string_lossy();
+        let href = format!("/artifact/{model_id}/{}/{index}/{relative_text}", kind.id());
+        if extension == "pdf" {
+            views.push((format!("📄 {name}"), format!("<div class=inspection-stage><iframe src='{href}#view=FitH&toolbar=1&navpanes=0' title='{} PDF' loading=lazy></iframe></div><footer><span>Scroll normally through every page.</span><span><a href='{href}' target=_blank>Open separately</a> · <a href='{href}' download>Download PDF</a></span></footer>", esc(name))));
+        } else if matches!(extension, "png" | "jpg" | "jpeg" | "svg")
+            && (lower.contains("schematic") || lower.contains("board") || lower.contains("pcb"))
+        {
+            let label = if lower.contains("schematic") {
+                "Schematic"
+            } else {
+                "PCB layout"
+            };
+            views.push((label.into(), format!("<div class='inspection-stage image-stage'><img src='{href}' alt='{}'></div><footer><span>Generated {label} artifact.</span><span><a href='{href}' target=_blank>Open full size</a> · <a href='{href}' download>Download</a></span></footer>", esc(name))));
+        }
+    }
+    if views.is_empty() {
+        return "<article><header><h2>Work product</h2></header><p>No inspectable model, schematic, layout, or PDF was recorded.</p></article>".into();
+    }
+    let tabs = views.iter().enumerate().map(|(position, (label, _))| format!("<button type=button role=tab aria-selected={} aria-controls=artifact-view-{position} id=artifact-tab-{position} data-artifact-tab=artifact-view-{position}>{}</button>", position == 0, esc(label))).collect::<String>();
+    let panels = views.into_iter().enumerate().map(|(position, (_, body))| format!("<div role=tabpanel id=artifact-view-{position} aria-labelledby=artifact-tab-{position} data-artifact-panel {}>{body}</div>", if position == 0 { "" } else { "hidden" })).collect::<String>();
+    format!(
+        "<article class=artifact-inspector id=artifact-inspector><header><div><h2>Work product</h2><small>Model, drawings, schematic, and board evidence from this prompt.</small></div><button type=button class=outline data-fullscreen-inspector>Fullscreen</button></header><nav role=tablist aria-label='Work product'>{tabs}</nav>{panels}</article>"
+    )
 }
 
 fn rigor_ledger(task: &crate::SuiteTaskResult) -> String {
@@ -768,7 +821,9 @@ fn artifact_category(path: &std::path::Path, extension: &str) -> &'static str {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    if matches!(extension, "stl" | "step" | "stp" | "glb" | "gltf") {
+    if extension == "pdf" {
+        "Drawings and documents"
+    } else if matches!(extension, "stl" | "step" | "stp" | "glb" | "gltf") {
         "3D models"
     } else if name.contains("timeline") || name.starts_with("step-") {
         "Build timeline"
@@ -804,6 +859,7 @@ fn collect_artifacts(
                     | "jpg"
                     | "jpeg"
                     | "svg"
+                    | "pdf"
                     | "stl"
                     | "step"
                     | "stp"
@@ -889,6 +945,10 @@ bench.addEventListener('change',drawPareto);const requested=location.hash.replac
 // Source: https://github.com/picocss/pico (MIT)
 const CSS: &str = include_str!("../assets/pico.min.css");
 
+const PROMPT_INSPECTOR_CSS: &str = r#"
+.artifact-inspector>header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.artifact-inspector>header h2{margin-bottom:.15rem}.artifact-inspector>nav[role=tablist]{display:flex;gap:.45rem;overflow-x:auto;padding:.65rem 0;border-bottom:1px solid var(--pico-muted-border-color)}.artifact-inspector [role=tab]{width:auto;margin:0;padding:.55rem .85rem;white-space:nowrap}.artifact-inspector [role=tab][aria-selected=false]{background:transparent;color:var(--pico-muted-color)}.inspection-stage{min-height:620px;background:#151a20}.inspection-stage iframe{display:block;width:100%;height:min(78vh,980px);min-height:620px;border:0;background:#d7d9dc}.image-stage{display:grid;place-items:center;overflow:auto;padding:1rem;background:#30343a}.image-stage img{display:block;max-width:none;width:auto;min-width:min(100%,900px);height:auto}.artifact-inspector [role=tabpanel]>footer{display:flex;justify-content:space-between;gap:1rem;padding-top:.75rem}.artifact-inspector:fullscreen{overflow:auto;padding:1rem;background:var(--pico-background-color)}.artifact-inspector:fullscreen .inspection-stage,.artifact-inspector:fullscreen .inspection-stage iframe{height:calc(100vh - 11rem);min-height:0}.artifact-inspector:fullscreen #stl-viewer{height:calc(100vh - 11rem);min-height:0}@media(max-width:700px){.inspection-stage,.inspection-stage iframe{min-height:480px}.artifact-inspector [role=tabpanel]>footer{align-items:flex-start;flex-direction:column}}
+"#;
+
 #[allow(dead_code)]
 const _REMOVED_CUSTOM_CSS: &str = concat!(
     include_str!("../assets/pico.min.css"),
@@ -940,6 +1000,13 @@ const _REMOVED_PROMPT_PAGE_CSS: &str = r#"
 
 const PROMPT_PAGE_JS: &str = r#"
 document.querySelector('#prompt-select').addEventListener('change',event=>location.href=event.target.value);
+const inspector=document.querySelector('#artifact-inspector');
+const artifactTabs=[...document.querySelectorAll('[data-artifact-tab]')];
+const artifactPanels=[...document.querySelectorAll('[data-artifact-panel]')];
+function selectArtifact(id){artifactTabs.forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.artifactTab===id)));artifactPanels.forEach(panel=>panel.hidden=panel.id!==id)}
+artifactTabs.forEach((tab,index)=>{tab.addEventListener('click',()=>selectArtifact(tab.dataset.artifactTab));tab.addEventListener('keydown',event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();const direction=event.key==='ArrowRight'?1:-1;const next=artifactTabs[(index+direction+artifactTabs.length)%artifactTabs.length];next.focus();selectArtifact(next.dataset.artifactTab)}})});
+document.querySelector('[data-fullscreen-inspector]')?.addEventListener('click',async()=>{if(document.fullscreenElement)await document.exitFullscreen();else await inspector?.requestFullscreen()});
+document.addEventListener('fullscreenchange',()=>{const button=document.querySelector('[data-fullscreen-inspector]');if(button)button.textContent=document.fullscreenElement?'Exit fullscreen':'Fullscreen'});
 const host=document.querySelector('#stl-viewer');
 if(host){try{
 const THREE=await import('https://esm.sh/three@0.180.0');
@@ -1052,5 +1119,43 @@ mod tests {
         ] {
             assert!(html.contains(expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn artifact_inspector_switches_model_pdf_schematic_and_board_views() {
+        let root =
+            std::env::temp_dir().join(format!("eval-artifact-inspector-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for name in [
+            "final.stl",
+            "drawing.pdf",
+            "schematic.svg",
+            "board-render.png",
+        ] {
+            std::fs::write(root.join(name), b"fixture").unwrap();
+        }
+        let mut artifacts = Vec::new();
+        collect_artifacts(&root, &root, 0, &mut artifacts);
+        let html = artifact_inspector(
+            "model",
+            BenchmarkKind::Pcb,
+            0,
+            &root,
+            &artifacts,
+            "<div id=stl-viewer></div>".into(),
+        );
+        for expected in [
+            "3D model",
+            "📄 drawing",
+            "Schematic",
+            "PCB layout",
+            "Scroll normally through every page.",
+            "data-fullscreen-inspector",
+            "role=tablist",
+        ] {
+            assert!(html.contains(expected), "missing {expected}");
+        }
+        assert!(html.contains("drawing.pdf#view=FitH"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

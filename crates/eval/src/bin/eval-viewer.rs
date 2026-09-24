@@ -410,6 +410,7 @@ fn artifact(
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
         "json" => "application/json",
         "csv" => "text/csv; charset=utf-8",
         "glb" => "model/gltf-binary",
