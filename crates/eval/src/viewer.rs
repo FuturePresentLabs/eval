@@ -131,10 +131,7 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
                 let shown = if (value - winners[column]).abs() < 0.0001 { format!("<strong>{text}</strong>") } else { text };
                 format!("<td data-score='{value}'><a class=score-cell href='/prompt/{}/{}/0'><span>{shown}</span><small>{}/{} tasks</small><small>{} review · {} errors</small></a></td>", esc(model.id), kind.id(), report.passed, report.total, report.needs_human, report.errors)
             }
-            None => format!(
-                "<td class=missing-score data-score='-1'><span>Not run</span><small>No {} suite report in this index</small></td>",
-                kind.name()
-            ),
+            None => "<td class=missing-score data-score='-1'>N/A</td>".to_owned(),
         }).collect::<String>();
         let is_model = |value: &&str| !matches!(*value, "Not recorded" | "TBD" | "Not applicable");
         let configuration = [model.rlcd_model, model.generative_model]
@@ -145,8 +142,8 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
             .collect::<Vec<_>>()
             .join(" → ");
         let covered = coverage(model);
-        let overall_cell = if covered == 0 { "<td data-score='-1'>—</td>".to_owned() } else { let value = overall(model); let shown = if (value - overall_winner).abs() < 0.0001 { format!("<strong>{value:.1}</strong>") } else { format!("{value:.1}") }; format!("<td data-score='{value:.3}'><span class=score-cell><span>{shown}</span><small>mean of {covered} suite rate(s)</small></span></td>") };
-        format!("<tr><td>{}</td><th scope=row><code>{}</code></th><td>{}</td>{overall_cell}{scores}</tr>", rank + 1, if configuration.is_empty() { "—".to_owned() } else { configuration }, esc(model.harness))
+        let overall_cell = if covered == 0 { "<td class=missing-score data-score='-1'>N/A</td>".to_owned() } else { let value = overall(model); let shown = if (value - overall_winner).abs() < 0.0001 { format!("<strong>{value:.1}</strong>") } else { format!("{value:.1}") }; format!("<td data-score='{value:.3}'><span class=score-cell><span>{shown}</span><small>mean of {covered} suite rate(s)</small></span></td>") };
+        format!("<tr><td>{}</td><th class=configuration scope=row><code>{}</code></th><td class=harness>{}</td>{overall_cell}{scores}</tr>", rank + 1, if configuration.is_empty() { "N/A".to_owned() } else { configuration }, esc(model.harness))
     }).collect::<String>();
     let evidence = String::new();
     let chart_data = chart_data(models, &kinds);
@@ -168,7 +165,12 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
                     format!("<section class=readme-copy>{}</section>", primer.html),
                 ),
             );
-        format!("<article id=primer-{} class='benchmark-primer-panel {}' data-bench={} role=tabpanel {}><header><hgroup><p>{}</p><h2>{}</h2></hgroup></header>{body}</article>", kind.id(), kind.id(), kind.id(), if active == Some(*kind) { "" } else { "hidden" }, kind.emoji(), if status == "Benchmark definition not recorded" { status } else { kind.name() })
+        let heading = if status == "Benchmark definition not recorded" {
+            format!("<h2>{status}</h2>")
+        } else {
+            String::new()
+        };
+        format!("<article id=primer-{} class='benchmark-primer-panel {}' data-bench={} role=tabpanel {}><header><hgroup><p>{}</p>{heading}</hgroup></header>{body}</article>", kind.id(), kind.id(), kind.id(), if active == Some(*kind) { "" } else { "hidden" }, kind.emoji())
     }).collect::<String>();
     let rows = if rows.is_empty() {
         "<tr><td colspan=8>No benchmark configurations recorded.</td></tr>".to_owned()
@@ -181,13 +183,13 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
     )
     .replace(&format!("<span>{} evaluated</span>", models.len()), "")
     .replace("FPL decision model leaderboard", "FPL evaluation leaderboard")
-    .replace("decision model index", "evaluation index")
+    .replace("decision model index", "Testing AI on ECE, CAD, and CAM tasks")
     .replace("Decision models × harnesses", "Evaluation leaderboard")
     .replace("<p>Comparable configurations. Column leaders are bold.</p>", "")
     .replace("<nav class=benchmark-switcher aria-label='Benchmark' role=tablist>", "<nav class=benchmark-switcher aria-label='Benchmark' role=tablist><ul>")
     .replace("</nav></div></header><main id=leaderboard>", "</ul></nav></div></header><main id=leaderboard>")
     .replace("<meta name=viewport content='width=device-width,initial-scale=1'>", "<meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content='light dark'>")
-    .replace("<header class=site-head><a class=wordmark href=#leaderboard>FPL <span>evaluation index</span></a><div class=header-actions><div class=monitor-controls><button type=button id=refresh>Refresh</button><label><input id=live type=checkbox checked> Live</label></div><nav class=benchmark-switcher aria-label='Benchmark' role=tablist><ul>", "<header class=container><nav aria-label='Benchmark'><ul><li><strong>FPL evaluation index</strong></li></ul><ul>")
+    .replace("<header class=site-head><a class=wordmark href=#leaderboard>FPL <span>Testing AI on ECE, CAD, and CAM tasks</span></a><div class=header-actions><div class=monitor-controls><button type=button id=refresh>Refresh</button><label><input id=live type=checkbox checked> Live</label></div><nav class=benchmark-switcher aria-label='Benchmark' role=tablist><ul>", "<header class=container><nav aria-label='Benchmark'><ul><li><strong>Testing AI on ECE, CAD, and CAM tasks</strong></li></ul><ul>")
     .replace("</ul></nav></div></header><main id=leaderboard>", "<li><button id=theme-toggle class=secondary type=button>Theme</button></li></ul></nav></header><main id=leaderboard class=container>")
     .replace("<div class=leader-wrap>", "<div class=overflow-auto>")
     .replace("<table class=leader-table>", "<table class='leader-table striped'>")
@@ -568,7 +570,10 @@ pub fn render_prompt_page(
 }
 
 fn design_decisions(work_dir: &std::path::Path) -> String {
-    let stock = match std::fs::read_to_string(work_dir.join("starting-stock.json")) {
+    let recipe_context = std::fs::read_to_string(work_dir.join("recipe-context.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let input = match std::fs::read_to_string(work_dir.join("starting-stock.json")) {
         Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
             Ok(value) => {
                 let dimensions = value.get("size_mm").and_then(|v| v.as_array()).map(|values| values.iter().map(|v| v.as_f64().map_or_else(|| "?".into(), |n| format!("{n}"))).collect::<Vec<_>>().join(" × ")).unwrap_or_else(|| "Not recorded".into());
@@ -576,7 +581,15 @@ fn design_decisions(work_dir: &std::path::Path) -> String {
             }
             Err(error) => format!("<article><header><h3>Starting stock · generative</h3></header><p>Invalid extraction artifact: {}</p></article>", esc(&error.to_string())),
         },
-        Err(_) => "<article><header><h3>Starting stock · generative</h3></header><p>Not recorded</p></article>".into(),
+        Err(_) => recipe_context.as_ref().map_or_else(
+            || "<article><header><h3>Inputs</h3></header><p>Not recorded</p></article>".into(),
+            |value| {
+                let board = value.pointer("/board/name").and_then(|v| v.as_str()).unwrap_or("Board contract");
+                let material = value.get("material").and_then(|v| v.as_str()).unwrap_or("Not recorded");
+                let ip = value.get("ip").and_then(|v| v.as_str()).unwrap_or("No IP requirement");
+                format!("<article><header><h3>Recipe inputs</h3></header><p><strong>{}</strong><br>{}<br><code>{}</code></p></article>", esc(board), esc(material), esc(ip))
+            },
+        ),
     };
     let trace = match std::fs::read_to_string(work_dir.join("decisions.json")) {
         Ok(text) => match serde_json::from_str::<Vec<serde_json::Value>>(&text) {
@@ -595,8 +608,19 @@ fn design_decisions(work_dir: &std::path::Path) -> String {
         },
         Err(_) => "<p>Not recorded</p>".into(),
     };
+    let ingress = recipe_context.as_ref().and_then(|value| value.pointer("/standards/ingress")).map(|value| {
+        let code = value.get("code").and_then(|v| v.as_str()).unwrap_or("Not recorded");
+        let sealed = value.get("sealed").and_then(|v| v.as_bool()).map_or("Not recorded", |v| if v { "Open vents forbidden" } else { "Open vents may be offered" });
+        let probe = value.get("probe_mm").and_then(|v| v.as_f64()).map_or("—".into(), |v| format!("{v:.3} mm"));
+        let drip = value.get("drip_angle_deg").and_then(|v| v.as_f64()).map_or("—".into(), |v| format!("{v:.1}°"));
+        format!("<article><header><h3>Ingress constraints · deterministic</h3></header><p><strong>{}</strong><br>{}</p><dl><dt>Solid probe</dt><dd>{probe}</dd><dt>Water angle</dt><dd>{drip}</dd></dl></article>", esc(code), esc(sealed))
+    }).unwrap_or_default();
+    let composition = std::fs::read_to_string(work_dir.join("composition.json")).ok().and_then(|text| serde_json::from_str::<Vec<serde_json::Value>>(&text).ok()).filter(|calls| !calls.is_empty()).map(|calls| {
+        let rows = calls.iter().map(|call| format!("<tr><td><code>{}</code></td><td>{}</td><td><code>{}</code></td></tr>", esc(call.get("tool").and_then(|v| v.as_str()).unwrap_or("Unknown")), call.get("body").and_then(|v| v.as_u64()).map_or("—".into(), |v| v.to_string()), esc(call.get("ip").and_then(|v| v.as_str()).unwrap_or("—")))).collect::<String>();
+        format!("<section><h3>Recipe composition</h3><div class=overflow-auto><table class=striped><thead><tr><th>Lua tool</th><th>Body</th><th>Standard input</th></tr></thead><tbody>{rows}</tbody></table></div></section>")
+    }).unwrap_or_default();
     format!(
-        "<section><h2>Design decisions</h2><div class=grid>{stock}<article><header><h3>Geometry · RLCD</h3></header>{trace}</article></div></section>"
+        "<section><h2>Design decisions</h2><div class=grid>{input}<article><header><h3>Geometry · RLCD</h3></header>{trace}</article>{ingress}</div>{composition}</section>"
     )
 }
 
@@ -1075,12 +1099,14 @@ main{padding-top:2.3rem}.leader-head{padding-bottom:1.4rem}.leader-head h1{font-
 "#
 );
 
-const LEADERBOARD_CSS: &str = "";
+const LEADERBOARD_CSS: &str = r#"
+.leader-table .configuration,.leader-table .harness{max-width:14rem;color:var(--pico-muted-color);font-size:.82rem;font-weight:500;line-height:1.35;overflow-wrap:anywhere}.leader-table .configuration code{padding:0;background:transparent;color:inherit;font-size:.78rem;white-space:normal}.missing-score{color:var(--pico-muted-color);font-size:.78rem}.benchmark-primer-panel>header{padding:1rem 1.5rem 0}.benchmark-primer-panel>header p{margin:0;color:var(--pico-muted-color)}.readme-copy{max-width:62rem;padding:.25rem 1.5rem 1.5rem}.readme-copy h1{margin:.1rem 0 1rem;font-size:clamp(1.8rem,4vw,2.75rem);letter-spacing:-.035em}.readme-copy h2{margin-top:1.6rem;font-size:1.2rem}.readme-copy p,.readme-copy li{max-width:78ch}@media(max-width:700px){.readme-copy,.benchmark-primer-panel>header{padding-inline:1rem}}
+"#;
 
 #[allow(dead_code)]
 const _REMOVED_LEADERBOARD_CSS: &str = concat!(
     r#"
-.leader-head{display:flex;align-items:end;justify-content:space-between;gap:24px;padding-bottom:24px}.leader-head h1{margin:0;font-size:clamp(38px,7vw,82px);letter-spacing:-.06em;line-height:.95}.leader-head p{margin:14px 0 0;color:var(--muted)}.leader-head>span{font-variant-numeric:tabular-nums;color:var(--muted)}.leader-wrap{overflow:auto;border-top:3px solid var(--ink);border-bottom:1px solid var(--ink);background:var(--surface)}.leader-table{min-width:920px;font-variant-numeric:tabular-nums}.leader-table th,.leader-table td{padding:15px 14px}.leader-table thead th{position:sticky;top:65px;z-index:2;background:var(--paper);color:var(--muted);font-size:12px}.leader-table thead button{border:0;background:none;color:inherit;font:inherit;font-weight:700;cursor:pointer}.leader-table tbody th{min-width:220px}.leader-table tbody th strong{display:block;font-size:16px}.leader-table small{display:block;color:var(--muted);font-weight:400}.leader-table td>a{color:inherit;text-decoration:none}.leader-table td>a:hover{text-decoration:underline}.rank{width:48px;color:var(--muted)}.missing-score{color:var(--muted);background:#f7f8f6}.missing-score span{font-weight:650}.missing-identity{color:#8b651c}.empty-row td{padding:36px;text-align:center;color:var(--muted)}.empty-row strong,.empty-row span{display:block}.primer-empty{max-width:760px;margin:14px 64px 24px;padding:16px;border:1px dashed var(--rule);color:var(--muted)}.primer-empty p{margin:4px 0 0}.specialty{min-width:190px;color:#76590c}.evidence{padding-top:72px;scroll-margin-top:64px}.evidence>header{display:flex;justify-content:space-between;align-items:end;border-bottom:3px solid var(--ink)}.evidence h2{margin:0;font-size:30px}.evidence p{color:var(--muted)}.evidence>header a{padding-bottom:14px;color:var(--ink)}
+.leader-head{display:flex;align-items:end;justify-content:space-between;gap:24px;padding-bottom:24px}.leader-head h1{margin:0;font-size:clamp(38px,7vw,82px);letter-spacing:-.06em;line-height:.95}.leader-head p{margin:14px 0 0;color:var(--muted)}.leader-head>span{font-variant-numeric:tabular-nums;color:var(--muted)}.leader-wrap{overflow:auto;border-top:3px solid var(--ink);border-bottom:1px solid var(--ink);background:var(--surface)}.leader-table{min-width:920px;font-variant-numeric:tabular-nums}.leader-table th,.leader-table td{padding:13px 12px}.leader-table thead th{position:sticky;top:65px;z-index:2;background:var(--paper);color:var(--muted);font-size:12px}.leader-table thead button{border:0;background:none;color:inherit;font:inherit;font-weight:700;cursor:pointer}.leader-table tbody th{min-width:180px}.leader-table .configuration,.leader-table .harness{max-width:210px;color:var(--muted);font-size:13px;font-weight:500;line-height:1.35;overflow-wrap:anywhere}.leader-table .configuration code{padding:0;background:transparent;color:inherit;font-size:12px;white-space:normal}.leader-table tbody th strong{display:block;font-size:16px}.leader-table small{display:block;color:var(--muted);font-weight:400}.leader-table td>a{color:inherit;text-decoration:none}.leader-table td>a:hover{text-decoration:underline}.rank{width:48px;color:var(--muted)}.missing-score{color:var(--muted);background:#f7f8f6;font-size:12px}.missing-identity{color:#8b651c}.empty-row td{padding:36px;text-align:center;color:var(--muted)}.empty-row strong,.empty-row span{display:block}.primer-empty{max-width:760px;margin:14px 64px 24px;padding:16px;border:1px dashed var(--rule);color:var(--muted)}.primer-empty p{margin:4px 0 0}.specialty{min-width:190px;color:#76590c}.evidence{padding-top:72px;scroll-margin-top:64px}.evidence>header{display:flex;justify-content:space-between;align-items:end;border-bottom:3px solid var(--ink)}.evidence h2{margin:0;font-size:30px}.evidence p{color:var(--muted)}.evidence>header a{padding-bottom:14px;color:var(--ink)}
 "#,
     r#"
 .pareto-shell{margin:12px 0 40px;padding:22px;border:1px solid var(--rule);background:var(--surface)}.pareto-shell>header{display:flex;align-items:start;justify-content:space-between;gap:20px}.pareto-shell h2{margin:0;font-size:23px}.pareto-shell p{margin:5px 0;color:var(--muted)}.pareto-shell select{padding:7px 9px;border:1px solid var(--rule);background:var(--surface);color:var(--ink)}#pareto{display:block;width:100%;height:auto;min-height:320px}.chart-axis{stroke:var(--ink);stroke-width:1.5}.chart-grid{stroke:#e0e5df;stroke-width:1}.chart-label,.chart-title,.chart-point text{fill:var(--muted);font:12px "Aptos","Helvetica Neue",Arial,sans-serif}.frontier{fill:none;stroke:#a87813;stroke-width:3}.chart-point circle{fill:#84908a;stroke:var(--surface);stroke-width:2}.frontier-point circle{fill:#a87813}.chart-point:focus{outline:none}.chart-point:focus circle{stroke:var(--ink);stroke-width:4}
@@ -1342,6 +1368,16 @@ mod tests {
             r#"[{"key":"bore_layout","type":"choice","chosen":"rectangular_four","confidence":1.0}]"#,
         )
         .unwrap();
+        std::fs::write(
+            root.join("recipe-context.json"),
+            r#"{"board":{"name":"Raspberry Pi 4 Model B"},"material":"ABS","ip":"IP65","standards":{"ingress":{"code":"IP65","sealed":true,"probe_mm":1.0}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("composition.json"),
+            r#"[{"tool":"enclosure","body":0},{"tool":"connector_cutouts","body":0,"ip":"IP65"}]"#,
+        )
+        .unwrap();
         let html = design_decisions(&root);
         for expected in [
             "Starting stock · generative",
@@ -1352,6 +1388,10 @@ mod tests {
             "bore_layout",
             "rectangular_four",
             "Accepted",
+            "Ingress constraints · deterministic",
+            "Open vents forbidden",
+            "Recipe composition",
+            "connector_cutouts",
         ] {
             assert!(html.contains(expected), "missing {expected}");
         }
