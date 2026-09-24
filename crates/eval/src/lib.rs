@@ -80,5 +80,5 @@ pub use protocol::{ProtocolError, RunBudget, RunProtocol, SamplingParameters, Tr
 pub use score::{
     CapabilityScore, CriterionResult, ScoreComposition, ScoreReport, Verdict, scores_by_capability,
 };
-pub use suite::{SuiteError, SuiteReport, SuiteTaskResult, run_all};
+pub use suite::{CriterionDefinition, SuiteError, SuiteReport, SuiteTaskResult, run_all};
 pub use task::{Criterion, DatasetSplit, Difficulty, Task, TaskMetadata};

@@ -6,6 +6,7 @@
 //! versioned suite report. CAD, PCB, and future harnesses therefore cannot
 //! quietly acquire different definitions of "run all".
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -50,12 +51,24 @@ pub struct SuiteTaskResult {
     /// Present when a task declared metadata that could not be decoded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_error: Option<String>,
+    /// Portable descriptions of the checks declared by the benchmark task.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub criterion_definitions: BTreeMap<String, CriterionDefinition>,
     #[serde(default)]
     pub elapsed_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<ScoreReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CriterionDefinition {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameters: BTreeMap<String, String>,
 }
 
 /// Failure in suite orchestration itself, rather than in an evaluated task.
@@ -140,7 +153,7 @@ where
     let mut tasks = Vec::with_capacity(total);
     write_suite_report(&tasks_dir, &results_dir, total, &tasks)?;
     for task_file in task_files {
-        let (task_metadata, metadata_error) = read_task_metadata(&task_file);
+        let (task_metadata, metadata_error, criterion_definitions) = read_task_contract(&task_file);
         let stem = task_file
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -152,6 +165,7 @@ where
                 work_dir,
                 task_metadata,
                 metadata_error,
+                criterion_definitions,
                 elapsed_ms: 0,
                 report: None,
                 error: Some(format!("creating task work directory: {error}")),
@@ -171,6 +185,7 @@ where
                     work_dir,
                     task_metadata,
                     metadata_error,
+                    criterion_definitions,
                     elapsed_ms: started.elapsed().as_millis(),
                     report: Some(report),
                     error: None,
@@ -181,6 +196,7 @@ where
                 work_dir,
                 task_metadata,
                 metadata_error,
+                criterion_definitions,
                 elapsed_ms: started.elapsed().as_millis(),
                 report: None,
                 error: Some(error.to_string()),
@@ -192,20 +208,60 @@ where
     write_suite_report(&tasks_dir, &results_dir, total, &tasks)
 }
 
-fn read_task_metadata(path: &Path) -> (Option<TaskMetadata>, Option<String>) {
+fn read_task_contract(
+    path: &Path,
+) -> (
+    Option<TaskMetadata>,
+    Option<String>,
+    BTreeMap<String, CriterionDefinition>,
+) {
     let value = match std::fs::read_to_string(path)
         .map_err(|error| error.to_string())
         .and_then(|text| toml::from_str::<toml::Value>(&text).map_err(|error| error.to_string()))
     {
         Ok(value) => value,
-        Err(error) => return (None, Some(error)),
+        Err(error) => return (None, Some(error), BTreeMap::new()),
     };
+    let definitions = value
+        .get("rubric")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|criterion| {
+            let table = criterion.as_table()?;
+            let id = table.get("id")?.as_str()?.to_owned();
+            let kind = table.get("kind")?.as_str()?.to_owned();
+            let standard_profile = table
+                .get("profile")
+                .or_else(|| table.get("standard"))
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned);
+            let parameters = table
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.as_str(),
+                        "id" | "description" | "kind" | "profile" | "standard"
+                    )
+                })
+                .map(|(key, value)| (key.clone(), value.to_string()))
+                .collect();
+            Some((
+                id,
+                CriterionDefinition {
+                    kind,
+                    standard_profile,
+                    parameters,
+                },
+            ))
+        })
+        .collect();
     let Some(metadata) = value.get("metadata").cloned() else {
-        return (None, None);
+        return (None, None, definitions);
     };
     match metadata.try_into::<TaskMetadata>() {
-        Ok(metadata) => (Some(metadata), None),
-        Err(error) => (None, Some(error.to_string())),
+        Ok(metadata) => (Some(metadata), None, definitions),
+        Err(error) => (None, Some(error.to_string()), definitions),
     }
 }
 
@@ -333,14 +389,22 @@ mod tests {
             oracle_version = "spice-v1"
             split = "validation"
             expected_failure_modes = ["no-gain-compression"]
+            [[rubric]]
+            id = "function"
+            description = "clips under high drive"
+            kind = "spice_clips"
+            min_flat_top_at_max = 0.6
             "#,
         )
         .unwrap();
-        let (metadata, error) = read_task_metadata(&task);
+        let (metadata, error, definitions) = read_task_contract(&task);
         assert!(error.is_none());
         let metadata = metadata.expect("embedded metadata");
         assert_eq!(metadata.capabilities, ["electrical.function"]);
         assert_eq!(metadata.oracle_version, "spice-v1");
+        let definition = definitions.get("function").expect("criterion definition");
+        assert_eq!(definition.kind, "spice_clips");
+        assert_eq!(definition.parameters["min_flat_top_at_max"], "0.6");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -129,7 +129,7 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
                 let value = score(report);
                 let text = format!("{value:.1}");
                 let shown = if (value - winners[column]).abs() < 0.0001 { format!("<strong>{text}</strong>") } else { text };
-                format!("<td data-score='{value}'><a href='/prompt/{}/{}/0'>{shown}</a></td>", esc(model.id), kind.id())
+                format!("<td data-score='{value}'><a class=score-cell href='/prompt/{}/{}/0'><span>{shown}</span><small>{}/{} tasks</small><small>{} review · {} errors</small></a></td>", esc(model.id), kind.id(), report.passed, report.total, report.needs_human, report.errors)
             }
             None => "<td data-score='-1'>—</td>".to_owned(),
         }).collect::<String>();
@@ -142,7 +142,7 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
             .collect::<Vec<_>>()
             .join(" → ");
         let covered = coverage(model);
-        let overall_cell = if covered == 0 { "<td data-score='-1'>—</td>".to_owned() } else { let value = overall(model); let shown = if (value - overall_winner).abs() < 0.0001 { format!("<strong>{value:.1}</strong>") } else { format!("{value:.1}") }; format!("<td data-score='{value:.3}'>{shown}</td>") };
+        let overall_cell = if covered == 0 { "<td data-score='-1'>—</td>".to_owned() } else { let value = overall(model); let shown = if (value - overall_winner).abs() < 0.0001 { format!("<strong>{value:.1}</strong>") } else { format!("{value:.1}") }; format!("<td data-score='{value:.3}'><span class=score-cell><span>{shown}</span><small>mean of {covered} suite rate(s)</small></span></td>") };
         format!("<tr><td>{}</td><th scope=row><code>{}</code></th><td>{}</td>{overall_cell}{scores}</tr>", rank + 1, if configuration.is_empty() { "—".to_owned() } else { configuration }, esc(model.harness))
     }).collect::<String>();
     let evidence = String::new();
@@ -173,7 +173,7 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
         rows
     };
     format!(
-        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>FPL decision model leaderboard</title><style>{CSS}{LEADERBOARD_CSS}</style></head><body><header class=site-head><a class=wordmark href=#leaderboard>FPL <span>decision model index</span></a><div class=header-actions><div class=monitor-controls><button type=button id=refresh>Refresh</button><label><input id=live type=checkbox checked> Live</label></div><nav class=benchmark-switcher aria-label='Benchmark' role=tablist>{switcher}</nav></div></header><main id=leaderboard><div class=leader-head><div><h1>Decision models × harnesses</h1><p>Comparable configurations. Column leaders are bold.</p></div><span>{} evaluated</span></div><section class=benchmark-guide>{primers_html}</section><article class=pareto-shell><header><h2>Price / score frontier</h2><select id=pareto-bench aria-label=Benchmark><option value=overall>Overall</option><option value=pcb>PCB</option><option value=cad>CAD</option><option value=cam>CAM</option><option value=dfm>DFM</option></select><select id=pareto-x aria-label='X axis'><option value=cost>Cost / task</option></select></header><svg id=pareto role=img aria-label='Model score versus price' viewBox='0 0 1000 430' width='100%' height='430' hidden></svg><p id=pareto-empty hidden>Come back soon.</p></article><div class=leader-wrap><table class=leader-table><thead><tr><th>Rank</th><th>Configuration</th><th>Harness</th><th><a href=# data-column=3>Overall</a></th><th><a href=# data-column=4>⚡ PCB</a></th><th><a href=# data-column=5>📐 CAD</a></th><th><a href=# data-column=6>⚙️ CAM</a></th><th><a href=# data-column=7>🏭 DFM</a></th></tr></thead><tbody>{rows}</tbody></table></div>{evidence}</main><script>const paretoData={chart_data};{LEADERBOARD_JS}</script></body></html>",
+        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>FPL decision model leaderboard</title><style>{CSS}{LEADERBOARD_CSS}{SCORE_EXPLAINER_CSS}</style></head><body><header class=site-head><a class=wordmark href=#leaderboard>FPL <span>decision model index</span></a><div class=header-actions><div class=monitor-controls><button type=button id=refresh>Refresh</button><label><input id=live type=checkbox checked> Live</label></div><nav class=benchmark-switcher aria-label='Benchmark' role=tablist>{switcher}</nav></div></header><main id=leaderboard><div class=leader-head><div><h1>Decision models × harnesses</h1><p>Comparable configurations. Column leaders are bold.</p></div><span>{} evaluated</span></div><details class=score-method open><summary><strong>How scoring works</strong></summary><div class=grid><p><strong>Suite score</strong><br>Tasks passing every automated criterion ÷ all discovered tasks. Harness errors stay in the denominator.</p><p><strong>Human review</strong><br><code>NeedsHuman</code> is excluded from pass/fail, so it neither adds nor removes a task pass.</p><p><strong>Overall</strong><br>Arithmetic mean of available benchmark suite percentages. Missing benchmarks are excluded, not scored as zero.</p><p><strong>Current proxy behavior</strong><br>A passing proxy still counts as an automated pass in the v1 score; prompt pages mark it provisional.</p></div></details><section class=benchmark-guide>{primers_html}</section><article class=pareto-shell><header><h2>Price / score frontier</h2><select id=pareto-bench aria-label=Benchmark><option value=overall>Overall</option><option value=pcb>PCB</option><option value=cad>CAD</option><option value=cam>CAM</option><option value=dfm>DFM</option></select><select id=pareto-x aria-label='X axis'><option value=cost>Cost / task</option></select></header><svg id=pareto role=img aria-label='Model score versus price' viewBox='0 0 1000 430' width='100%' height='430' hidden></svg><p id=pareto-empty hidden>Come back soon.</p></article><div class=leader-wrap><table class=leader-table><thead><tr><th>Rank</th><th>Configuration</th><th>Harness</th><th><a href=# data-column=3>Overall</a></th><th><a href=# data-column=4>⚡ PCB</a></th><th><a href=# data-column=5>📐 CAD</a></th><th><a href=# data-column=6>⚙️ CAM</a></th><th><a href=# data-column=7>🏭 DFM</a></th></tr></thead><tbody>{rows}</tbody></table></div>{evidence}</main><script>const paretoData={chart_data};{LEADERBOARD_JS}</script></body></html>",
         models.len(),
     )
     .replace(&format!("<span>{} evaluated</span>", models.len()), "")
@@ -337,7 +337,7 @@ fn task_card(
         .unwrap_or_else(|| "Prompt unavailable".to_owned());
     let prompt_href = model_id.map(|model| format!("/prompt/{model}/{}/{index}", kind.id()));
     let artifacts = artifact_links(model_id, kind, index, &task.work_dir);
-    let standards = task_standards(&task.task_file);
+    let standards = task_check_definitions(task);
     let Some(report) = &task.report else {
         return format!(
             "<article class='task error'><header><h2>{}</h2><span>Harness error</span></header><p>{}</p>{prompt}{artifacts}</article>",
@@ -362,9 +362,9 @@ fn task_card(
             };
             let standard = standards
                 .get(&result.id)
-                .map(String::as_str)
-                .unwrap_or(&result.id);
-            format!("<details class='check {class}' title='{}'><summary><span class='verdict {class}'>{mark}</span><span><strong>{}</strong><small>{}</small></span></summary><div class=check-detail><h4>Evidence</h4><p>{}</p><code>{}</code></div></details>", esc(&result.detail), esc(standard), esc(&result.description), esc(&result.detail), esc(&result.id))
+                .map(check_heading)
+                .unwrap_or_else(|| result.id.clone());
+            format!("<details class='check {class}' title='{}'><summary><span class='verdict {class}'>{mark}</span><span><strong>{}</strong><small>{}</small></span></summary><div class=check-detail><h4>Evidence</h4><p>{}</p><code>{}</code></div></details>", esc(&result.detail), esc(&standard), esc(&result.description), esc(&result.detail), esc(&result.id))
         })
         .collect::<String>();
     let open_prompt = prompt_href.map_or(String::new(), |href| {
@@ -401,7 +401,7 @@ pub fn render_prompt_page(
         |value| value.task_id.clone(),
     );
     let brief = task_brief(&task.task_file);
-    let standards = task_standards(&task.task_file);
+    let standards = task_check_definitions(task);
     let deterministic = scored.map_or(0, |value| {
         value
             .results
@@ -447,9 +447,12 @@ pub fn render_prompt_page(
         ("pass", "PASS")
     };
     let checks = scored.map_or_else(|| format!("<p><strong>No score report</strong><br>{}</p>", esc(task.error.as_deref().unwrap_or("No harness error was recorded."))), |value| value.results.iter().map(|result| {
-        let (class, mark) = if is_proxy(result) { ("proxy", "PROXY") } else { match result.verdict { Verdict::Pass => ("pass", "PASS"), Verdict::Fail => ("fail", "FAIL"), Verdict::NeedsHuman => ("human", "REVIEW") } };
-        let standard = standards.get(&result.id).map(String::as_str).unwrap_or(&result.id);
-        format!("<tr class={class}><td><strong>{mark}</strong></td><th scope=row>{}<br><small><code>{}</code></small></th><td>{}</td><td>{}</td></tr>", esc(standard), esc(&result.id), esc(&result.description), esc(&result.detail))
+        let proxy = is_proxy(result);
+        let (class, mark, treatment) = if proxy { ("proxy", "PROXY", "Counts today; result remains provisional") } else { match result.verdict { Verdict::Pass => ("pass", "PASS", "Counts toward task pass"), Verdict::Fail => ("fail", "FAIL", "Fails the task"), Verdict::NeedsHuman => ("human", "REVIEW", "Excluded from objective score") } };
+        let definition = standards.get(&result.id);
+        let standard = definition.and_then(|value| value.standard_profile.as_deref()).unwrap_or("Benchmark-defined requirement");
+        let verification = definition.map(check_verification).unwrap_or_else(|| "Check definition unavailable in this legacy report".into());
+        format!("<tr class={class}><td><strong>{mark}</strong><br><small>{treatment}</small></td><th scope=row>{}<br><small>{}</small></th><td>{}<br><small><code>{}</code></small></td><td>{}</td></tr>", esc(&result.description), esc(standard), esc(&verification), esc(&result.id), esc(&result.detail))
     }).collect::<String>());
     let mut artifacts = Vec::new();
     collect_artifacts(&task.work_dir, &task.work_dir, 0, &mut artifacts);
@@ -541,7 +544,7 @@ pub fn render_prompt_page(
     );
     let rigor = rigor_ledger(task);
     Some(format!(
-        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content='light dark'><title>{} · {}</title><style>{CSS}{PROMPT_INSPECTOR_CSS}</style></head><body><header class=container><nav><ul><li><a href='/#benchmark-{}'>← Leaderboard</a></li><li><strong>{}</strong></li></ul><ul><li><small>{} · {}</small></li></ul></nav></header><main class=container><nav aria-label='Prompt carousel'><ul><li>{}</li></ul><ul><li><label>Prompt {}/{}<select id=prompt-select>{options}</select></label></li></ul><ul><li>{}</li></ul></nav><hgroup><p>{} · Prompt {}/{}</p><h1>{}</h1></hgroup><p><mark>{}</mark> &nbsp; {passed}/{deterministic} deterministic &nbsp; {proxies} proxy &nbsp; {reviews} review</p><section>{inspector}</section><section class=grid><article><header><h2>Manufacturing context</h2></header>{material}{duplicate_warning}</article><article><header><h2>Prompt</h2></header>{prompt}</article></section><section><h2>Rigor ledger</h2>{rigor}</section><section><h2>Checks</h2><p>Pass/fail rows contribute to the task score. Review rows remain unresolved; proxy rows are disclosed separately.</p><div class=overflow-auto><table class=striped><thead><tr><th>Result</th><th>Check</th><th>Requirement</th><th>Evidence</th></tr></thead><tbody>{checks}</tbody></table></div></section></main><script type=module>{PROMPT_PAGE_JS}</script></body></html>",
+        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content='light dark'><title>{} · {}</title><style>{CSS}{PROMPT_INSPECTOR_CSS}</style></head><body><header class=container><nav><ul><li><a href='/#benchmark-{}'>← Leaderboard</a></li><li><strong>{}</strong></li></ul><ul><li><small>{} · {}</small></li></ul></nav></header><main class=container><nav aria-label='Prompt carousel'><ul><li>{}</li></ul><ul><li><label>Prompt {}/{}<select id=prompt-select>{options}</select></label></li></ul><ul><li>{}</li></ul></nav><hgroup><p>{} · Prompt {}/{}</p><h1>{}</h1></hgroup><p><mark>{}</mark> &nbsp; {passed}/{deterministic} deterministic &nbsp; {proxies} proxy &nbsp; {reviews} review</p><section>{inspector}</section><section class=grid><article><header><h2>Manufacturing context</h2></header>{material}{duplicate_warning}</article><article><header><h2>Prompt</h2></header>{prompt}</article></section><section><h2>Rigor ledger</h2>{rigor}</section><section><h2>Standards and checks</h2><p>Each row names the requirement, verifier, recorded evidence, and exact score treatment.</p><div class=overflow-auto><table class=striped><thead><tr><th>Score treatment</th><th>Requirement / standard</th><th>Verification method</th><th>Evidence</th></tr></thead><tbody>{checks}</tbody></table></div></section></main><script type=module>{PROMPT_PAGE_JS}</script></body></html>",
         esc(&task_id),
         kind.name(),
         kind.id(),
@@ -739,7 +742,18 @@ fn stl_rank(path: &std::path::Path) -> (u8, u64) {
     )
 }
 
-fn task_standards(path: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+fn task_check_definitions(
+    task: &crate::SuiteTaskResult,
+) -> std::collections::BTreeMap<String, crate::CriterionDefinition> {
+    if !task.criterion_definitions.is_empty() {
+        return task.criterion_definitions.clone();
+    }
+    task_check_definitions_from_file(&task.task_file)
+}
+
+fn task_check_definitions_from_file(
+    path: &std::path::Path,
+) -> std::collections::BTreeMap<String, crate::CriterionDefinition> {
     let Some(rubric) = std::fs::read_to_string(path)
         .ok()
         .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
@@ -751,13 +765,56 @@ fn task_standards(path: &std::path::Path) -> std::collections::BTreeMap<String, 
         .into_iter()
         .filter_map(|criterion| {
             let id = criterion.get("id")?.as_str()?.to_owned();
-            let name = criterion
-                .get("standard")
+            let table = criterion.as_table()?;
+            let kind = table.get("kind")?.as_str()?.to_owned();
+            let standard_profile = table
+                .get("profile")
+                .or_else(|| table.get("standard"))
                 .and_then(toml::Value::as_str)
-                .or_else(|| criterion.get("kind").and_then(toml::Value::as_str))?;
-            Some((id, check_name(name)))
+                .map(str::to_owned);
+            let parameters = table
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.as_str(),
+                        "id" | "description" | "kind" | "profile" | "standard"
+                    )
+                })
+                .map(|(key, value)| (key.clone(), value.to_string()))
+                .collect();
+            Some((
+                id,
+                crate::CriterionDefinition {
+                    kind,
+                    standard_profile,
+                    parameters,
+                },
+            ))
         })
         .collect()
+}
+
+fn check_heading(definition: &crate::CriterionDefinition) -> String {
+    definition
+        .standard_profile
+        .clone()
+        .unwrap_or_else(|| check_name(&definition.kind))
+}
+
+fn check_verification(definition: &crate::CriterionDefinition) -> String {
+    let mut text = check_name(&definition.kind);
+    if !definition.parameters.is_empty() {
+        text.push_str(": ");
+        text.push_str(
+            &definition
+                .parameters
+                .iter()
+                .map(|(key, value)| format!("{}={value}", check_name(key)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    text
 }
 
 fn check_name(name: &str) -> String {
@@ -949,6 +1006,10 @@ const PROMPT_INSPECTOR_CSS: &str = r#"
 .artifact-inspector>header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.artifact-inspector>header h2{margin-bottom:.15rem}.artifact-inspector>nav[role=tablist]{display:flex;gap:.45rem;overflow-x:auto;padding:.65rem 0;border-bottom:1px solid var(--pico-muted-border-color)}.artifact-inspector [role=tab]{width:auto;margin:0;padding:.55rem .85rem;white-space:nowrap}.artifact-inspector [role=tab][aria-selected=false]{background:transparent;color:var(--pico-muted-color)}.inspection-stage{min-height:620px;background:#151a20}.inspection-stage iframe{display:block;width:100%;height:min(78vh,980px);min-height:620px;border:0;background:#d7d9dc}.image-stage{display:grid;place-items:center;overflow:auto;padding:1rem;background:#30343a}.image-stage img{display:block;max-width:none;width:auto;min-width:min(100%,900px);height:auto}.artifact-inspector [role=tabpanel]>footer{display:flex;justify-content:space-between;gap:1rem;padding-top:.75rem}.artifact-inspector:fullscreen{overflow:auto;padding:1rem;background:var(--pico-background-color)}.artifact-inspector:fullscreen .inspection-stage,.artifact-inspector:fullscreen .inspection-stage iframe{height:calc(100vh - 11rem);min-height:0}.artifact-inspector:fullscreen #stl-viewer{height:calc(100vh - 11rem);min-height:0}@media(max-width:700px){.inspection-stage,.inspection-stage iframe{min-height:480px}.artifact-inspector [role=tabpanel]>footer{align-items:flex-start;flex-direction:column}}
 "#;
 
+const SCORE_EXPLAINER_CSS: &str = r#"
+.score-method{margin:1rem 0 2rem}.score-method>.grid{padding-top:1rem}.score-method p{margin:0}.score-cell{display:flex;flex-direction:column;min-width:7rem;text-decoration:none}.score-cell>span:first-child{font-size:1.1rem;font-variant-numeric:tabular-nums}.score-cell small{color:var(--pico-muted-color);white-space:nowrap}
+"#;
+
 #[allow(dead_code)]
 const _REMOVED_CUSTOM_CSS: &str = concat!(
     include_str!("../assets/pico.min.css"),
@@ -1055,6 +1116,46 @@ mod tests {
         assert!(html.contains("data-column=6>⚙️ CAM"));
         assert!(html.contains("data-column=7>🏭 DFM"));
         assert!(!html.contains("class='bench-primer"));
+        assert!(html.contains("How scoring works"));
+        assert!(html.contains("Missing benchmarks are excluded"));
+        assert!(html.contains("passing proxy still counts"));
+    }
+
+    #[test]
+    fn leaderboard_score_cells_show_their_denominators() {
+        let report = SuiteReport {
+            schema: "eval.suite-report.v1".into(),
+            tasks_dir: PathBuf::from("tasks"),
+            results_dir: PathBuf::from("results"),
+            total: 4,
+            passed: 3,
+            failed: 1,
+            errors: 0,
+            needs_human: 2,
+            tasks: Vec::new(),
+        };
+        let model = ModelView {
+            id: "m",
+            name: "Model",
+            organization: None,
+            harness: "harness",
+            rlcd_model: Some("router"),
+            generative_model: Some("generator"),
+            alias: None,
+            pcb: None,
+            cad: Some(&report),
+            cam: None,
+            dfm: None,
+            pcb_metrics: RunMetrics::default(),
+            cad_metrics: RunMetrics::default(),
+            cam_metrics: RunMetrics::default(),
+            dfm_metrics: RunMetrics::default(),
+        };
+        let html = render_leaderboard(&[model], &[]);
+        assert!(html.contains("75.0"));
+        assert!(html.contains("3/4 tasks"));
+        assert!(html.contains("2 review · 0 errors"));
+        assert!(html.contains("mean of 1 suite rate(s)"));
     }
 
     #[test]
@@ -1092,6 +1193,16 @@ mod tests {
                 work_dir: PathBuf::from("missing-results"),
                 task_metadata: Some(metadata),
                 metadata_error: None,
+                criterion_definitions: [(
+                    "surfaces".into(),
+                    crate::CriterionDefinition {
+                        kind: "true_surfaces".into(),
+                        standard_profile: Some("ISO 10303 STEP geometry".into()),
+                        parameters: [("min_cylinders".into(), "4".into())].into_iter().collect(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
                 elapsed_ms: 1,
                 report: Some(ScoreReport {
                     task_id: "surface-mutant".into(),
@@ -1116,6 +1227,9 @@ mod tests {
             "capability-macro reporting",
             "do not award points",
             "1/1 deterministic",
+            "ISO 10303 STEP geometry",
+            "True Surfaces: Min Cylinders=4",
+            "Counts toward task pass",
         ] {
             assert!(html.contains(expected), "missing {expected}");
         }
