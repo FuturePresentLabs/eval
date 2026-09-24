@@ -46,8 +46,8 @@ pub fn assert_every_task_sound<C: DeserializeOwned>(
 
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
-        let task: Task<C> = toml::from_str(&text)
-            .unwrap_or_else(|e| panic!("{} parses: {e}", path.display()));
+        let task: Task<C> =
+            toml::from_str(&text).unwrap_or_else(|e| panic!("{} parses: {e}", path.display()));
 
         assert!(!task.id.trim().is_empty(), "{}: empty id", path.display());
         assert!(
@@ -73,12 +73,45 @@ pub fn assert_every_task_sound<C: DeserializeOwned>(
         ids.sort_unstable();
         let before = ids.len();
         ids.dedup();
-        assert_eq!(ids.len(), before, "{}: duplicate rubric ids", path.display());
+        assert_eq!(
+            ids.len(),
+            before,
+            "{}: duplicate rubric ids",
+            path.display()
+        );
 
         checked += 1;
     }
 
-    assert!(checked > 0, "{} has no .toml files to check", tasks_dir.display());
+    assert!(
+        checked > 0,
+        "{} has no .toml files to check",
+        tasks_dir.display()
+    );
+}
+
+/// Applies [`assert_every_task_sound`] and additionally requires explicit,
+/// versioned governance metadata on every promoted task.
+pub fn assert_every_task_rigorous<C: DeserializeOwned>(
+    tasks_dir: &Path,
+    required: &[(&str, fn(&[Criterion<C>]) -> bool)],
+) {
+    assert_every_task_sound::<C>(tasks_dir, required);
+    for entry in std::fs::read_dir(tasks_dir)
+        .unwrap_or_else(|e| panic!("{} is readable: {e}", tasks_dir.display()))
+    {
+        let path = entry.expect("dir entry readable").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+        let task: Task<C> =
+            toml::from_str(&text).unwrap_or_else(|e| panic!("{} parses: {e}", path.display()));
+        task.metadata
+            .validate()
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +243,19 @@ kind = "stages_pass"
         // Would panic on the malformed planned/ file if it were swept up.
         assert_every_task_sound::<Check>(&dir, &[("a stages_pass criterion", has_stages_pass)]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    #[should_panic(expected = "metadata.capabilities")]
+    fn rigorous_tasks_reject_compatibility_default_metadata() {
+        let dir =
+            std::env::temp_dir().join(format!("eval-testing-rigorous-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.toml"),
+            "id = \"a\"\nfamily = \"f\"\nbrief = \"b\"\nrubric = []\n",
+        )
+        .unwrap();
+        assert_every_task_rigorous::<Check>(&dir, &[]);
     }
 }

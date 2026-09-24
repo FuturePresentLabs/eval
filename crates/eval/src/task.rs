@@ -9,6 +9,91 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Benchmark-governance metadata used to stratify scores and keep task
+/// provenance explicit. Defaults preserve deserialization of historical task
+/// files; [`TaskMetadata::validate`] is the promotion gate for new suites.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskMetadata {
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub difficulty: Difficulty,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default = "unversioned_oracle")]
+    pub oracle_version: String,
+    #[serde(default)]
+    pub split: DatasetSplit,
+    #[serde(default)]
+    pub expected_failure_modes: Vec<String>,
+}
+
+impl Default for TaskMetadata {
+    fn default() -> Self {
+        Self {
+            capabilities: Vec::new(),
+            difficulty: Difficulty::Unspecified,
+            source: None,
+            oracle_version: unversioned_oracle(),
+            split: DatasetSplit::Development,
+            expected_failure_modes: Vec::new(),
+        }
+    }
+}
+
+impl TaskMetadata {
+    /// Refuse metadata that was merely filled by compatibility defaults.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.capabilities.is_empty() || self.capabilities.iter().any(|v| v.trim().is_empty()) {
+            return Err("metadata.capabilities must contain non-empty capability ids".into());
+        }
+        if self.difficulty == Difficulty::Unspecified {
+            return Err("metadata.difficulty must be declared".into());
+        }
+        if self.source.as_deref().is_none_or(|v| v.trim().is_empty()) {
+            return Err("metadata.source must be declared".into());
+        }
+        if self.oracle_version.trim().is_empty() || self.oracle_version == "unversioned" {
+            return Err("metadata.oracle_version must be declared".into());
+        }
+        if self.expected_failure_modes.is_empty()
+            || self
+                .expected_failure_modes
+                .iter()
+                .any(|v| v.trim().is_empty())
+        {
+            return Err(
+                "metadata.expected_failure_modes must contain non-empty failure modes".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+fn unversioned_oracle() -> String {
+    "unversioned".into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Difficulty {
+    #[default]
+    Unspecified,
+    Introductory,
+    Intermediate,
+    Advanced,
+    Adversarial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum DatasetSplit {
+    #[default]
+    Development,
+    Validation,
+    Holdout,
+}
+
 /// One eval task: what to design/build, and what "good" means.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task<C> {
@@ -21,6 +106,8 @@ pub struct Task<C> {
     /// layer as context. Never parsed for control flow here or in the
     /// backend — the typed decisions, not the prose, choose the design.
     pub brief: String,
+    #[serde(default)]
+    pub metadata: TaskMetadata,
     /// What the backend is given besides the brief -- input files, stated
     /// parameters -- as the task file's `[input]` table.
     ///
@@ -86,10 +173,36 @@ mod tests {
         assert_eq!(input["height_mm"].as_float(), Some(12.0));
         assert!(matches!(with.rubric[0].check, Check::Anything));
 
-        let without: Task<Check> = toml::from_str(
-            "id = \"t\"\nfamily = \"f\"\nbrief = \"b\"\nrubric = []\n",
+        let without: Task<Check> =
+            toml::from_str("id = \"t\"\nfamily = \"f\"\nbrief = \"b\"\nrubric = []\n").unwrap();
+        assert!(without.input.is_none());
+        assert_eq!(without.metadata, TaskMetadata::default());
+        assert!(without.metadata.validate().is_err());
+    }
+
+    #[test]
+    fn declared_metadata_is_valid_and_round_trips() {
+        let task: Task<Check> = toml::from_str(
+            r#"
+            id = "t"
+            family = "f"
+            brief = "b"
+            [metadata]
+            capabilities = ["geometry.bounds"]
+            difficulty = "intermediate"
+            source = "synthetic:paired-constraint"
+            oracle_version = "geometry-v1"
+            split = "holdout"
+            expected_failure_modes = ["wrong-width"]
+            [[rubric]]
+            id = "r"
+            description = "d"
+            kind = "anything"
+            "#,
         )
         .unwrap();
-        assert!(without.input.is_none());
+        assert!(task.metadata.validate().is_ok());
+        assert_eq!(task.metadata.split, DatasetSplit::Holdout);
+        assert_eq!(task.metadata.difficulty, Difficulty::Intermediate);
     }
 }

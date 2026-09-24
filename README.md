@@ -9,6 +9,8 @@ Shared harness scaffolding for typed-decision-driven design-agent
 benchmarks — the `Task`/`Criterion` TOML schema, the `Verdict`/
 `ScoreReport` shape, a `Backend` trait for driving a subprocess CLI, and a
 generalized "every shipped task file parses and has a sound rubric" test.
+It also owns whole-suite execution and aggregation, so every consuming
+benchmark gets the same definition of "run all."
 Used by [`cadbench`](https://github.com/FuturePresentLabs/cadbench) and
 [`pcbbench`](https://github.com/FuturePresentLabs/pcbbench); `dfmbench` and
 `cambench` are expected to build on it too rather than becoming a third
@@ -63,7 +65,11 @@ specific backend representation until this is settled.
 ## What's in this crate
 
 - `Task<C>` / `Criterion<C>` — the task container, generic over each
-  domain's own `Check` enum.
+  domain's own `Check` enum. `TaskMetadata` records capability, difficulty,
+  provenance, oracle version, dataset split, and expected failure modes.
+  Historical files deserialize with compatibility defaults, while
+  `testing::assert_every_task_rigorous` rejects those defaults for promoted
+  suites.
 - `Verdict` / `CriterionResult` / `ScoreReport` — not generic; once a
   criterion is scored, all that's left is `Pass`/`Fail`/`NeedsHuman` and a
   detail string. `ScoreReport::all_automated_pass()` /
@@ -73,6 +79,100 @@ specific backend representation until this is settled.
   `Error`) each consuming crate defines for itself. A harness never links
   a backend as a dependency; it spawns one as a subprocess. "Score a
   different tool" is a new impl, not a rewrite.
+- `run_all` / `SuiteReport` — discovers promoted task TOMLs in deterministic
+  order, gives each an isolated result directory, continues after task-level
+  backend errors, and writes `eval.suite-report.v1` to `suite-report.json`.
+  Nested `tasks/planned/` contracts are excluded until promoted.
+- `RunProtocol` / `TrialObservation` — records subjects, tasks, trials,
+  sampling parameters, budgets, reset identities, and result references. Its
+  validator fails closed unless the complete subject × task × trial matrix is
+  present and paired subjects used the same task snapshot.
+- `ScoreComposition` — reports objective passes, objective failures, and
+  unresolved human review independently. An objective rate never includes
+  `NeedsHuman` in its denominator.
+
+## Rigorous task metadata
+
+Promoted task files should include explicit governance metadata:
+
+```toml
+[metadata]
+capabilities = ["geometry.bounds", "geometry.holes"]
+difficulty = "intermediate"
+source = "synthetic:single-constraint-pair"
+oracle_version = "geometry-v1"
+split = "validation"
+expected_failure_modes = ["wrong-width", "missing-hole"]
+```
+
+Use development tasks while building a scorer, validation tasks for routine
+model comparison, and non-public holdout tasks for final claims. Task counts
+are not a coverage metric: publish per-capability results and macro-average
+capability families so duplicating an easy family cannot dominate the score.
+
+## Unified benchmark viewer
+
+`eval-viewer` combines any available PCB, CAD, CAM, and DFM suite reports into
+one self-contained HTML dashboard. The top-right switcher always shows all four
+disciplines; benchmarks without a loaded report remain visible but disabled.
+
+```bash
+cargo run -p eval --bin eval-viewer -- \
+  --pcb ../pcbbench/suite-report.json \
+  --cad ../cadbench/suite-report.json \
+  --cam ../cambench/suite-report.json \
+  --dfm ../dfmbench/suite-report.json \
+  --out benchmark-viewer.html
+```
+
+Every input is optional, so the same command works while individual benchmark
+runners are still being brought onto the shared `eval.suite-report.v1` contract.
+
+Add `--serve 8123` to run the same dashboard as a localhost monitor instead of
+writing a snapshot. It polls the input reports once per second, preserves the
+selected benchmark in the URL hash, and offers live-refresh, manual-refresh,
+and failed-only controls. Suite runners checkpoint their aggregate report after
+each prompt, so completed tasks appear before the rest of the run finishes.
+
+```bash
+cargo run -p eval --bin eval-viewer -- \
+  --pcb ../pcbbench/out/suite-report.json \
+  --cad ../cadbench/out/suite-report.json \
+  --serve 8123
+```
+
+For tailnet access, bind the server to the host's Tailscale address with
+`--bind "$(tailscale ip -4)"`; the default remains loopback-only.
+
+For configuration comparison, pass an `eval.leaderboard.v1` index instead of
+individual benchmark reports. Each entry independently names the actual
+decision model and its execution harness, then points to measured suite
+evidence. Router/deployment aliases are provenance only.
+
+```json
+{
+  "schema": "eval.leaderboard.v1",
+  "models": [{
+    "id": "example-model",
+    "name": "Transmog reference configuration",
+    "organization": "Example Lab",
+    "harness": "transmog",
+    "rlcd_model": "example/bounded-decider",
+    "generative_model": "GLM-5.3-Flash",
+    "alias": "production-cad-router",
+    "results": {
+      "cad": {
+        "report": "runs/example/cad/suite-report.json",
+        "average_cost_usd_per_task": 0.012
+      }
+    }
+  }]
+}
+```
+
+Price remains unavailable unless the benchmark runner records it; the viewer
+does not reconstruct price from a hand-maintained provider table. Wall time is
+retained as run metadata but is not used as the leaderboard's value axis.
 - `testing::assert_every_task_sound` — parses every `.toml` file one
   directory deep under a given `tasks/` dir, checks non-empty id/family/
   brief, runs caller-supplied required-check predicates, checks for

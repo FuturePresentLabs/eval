@@ -62,10 +62,21 @@
 //! ```
 
 mod backend;
+mod leaderboard;
+mod protocol;
 mod score;
+mod suite;
 mod task;
 pub mod testing;
+pub mod viewer;
 
 pub use backend::Backend;
-pub use score::{CriterionResult, ScoreReport, Verdict};
-pub use task::{Criterion, Task};
+pub use leaderboard::{
+    BenchmarkResultIndex, BenchmarkSource, LEADERBOARD_SCHEMA, LeaderboardIndex, ModelResultIndex,
+};
+pub use protocol::{ProtocolError, RunBudget, RunProtocol, SamplingParameters, TrialObservation};
+pub use score::{
+    CapabilityScore, CriterionResult, ScoreComposition, ScoreReport, Verdict, scores_by_capability,
+};
+pub use suite::{SuiteError, SuiteReport, SuiteTaskResult, run_all};
+pub use task::{Criterion, DatasetSplit, Difficulty, Task, TaskMetadata};
