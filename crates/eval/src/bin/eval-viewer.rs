@@ -107,18 +107,23 @@ fn render_index(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
         return Err(format!("unsupported leaderboard schema {:?}", index.schema).into());
     }
     let root = path.parent().unwrap_or_else(|| Path::new("."));
-    let primers = index
-        .benchmarks
-        .iter()
-        .filter_map(|(id, source)| {
-            let kind = benchmark_kind(id)?;
-            let markdown = std::fs::read_to_string(root.join(&source.readme)).ok()?;
-            Some(BenchmarkPrimer {
-                kind,
-                html: readme_primer(&markdown, &source.sections),
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut primers = Vec::new();
+    for (id, source) in &index.benchmarks {
+        let Some(kind) = benchmark_kind(id) else {
+            continue;
+        };
+        let readme_path = root.join(&source.readme);
+        let markdown = std::fs::read_to_string(&readme_path).map_err(|error| {
+            format!(
+                "cannot read {id} benchmark README {}: {error}",
+                readme_path.display()
+            )
+        })?;
+        primers.push(BenchmarkPrimer {
+            kind,
+            html: readme_primer(&markdown, &source.sections),
+        });
+    }
     let mut loaded = Vec::new();
     for model in index.models {
         let report = |kind: &str| -> Result<Option<SuiteReport>, Box<dyn std::error::Error>> {

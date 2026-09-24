@@ -131,7 +131,10 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
                 let shown = if (value - winners[column]).abs() < 0.0001 { format!("<strong>{text}</strong>") } else { text };
                 format!("<td data-score='{value}'><a class=score-cell href='/prompt/{}/{}/0'><span>{shown}</span><small>{}/{} tasks</small><small>{} review · {} errors</small></a></td>", esc(model.id), kind.id(), report.passed, report.total, report.needs_human, report.errors)
             }
-            None => "<td data-score='-1'>—</td>".to_owned(),
+            None => format!(
+                "<td class=missing-score data-score='-1'><span>Not run</span><small>No {} suite report in this index</small></td>",
+                kind.name()
+            ),
         }).collect::<String>();
         let is_model = |value: &&str| !matches!(*value, "Not recorded" | "TBD" | "Not applicable");
         let configuration = [model.rlcd_model, model.generative_model]
@@ -543,8 +546,9 @@ pub fn render_prompt_page(
         |value| format!("<p>{}</p>", esc(value).replace('\n', "<br>")),
     );
     let rigor = rigor_ledger(task);
+    let decisions = design_decisions(&task.work_dir);
     Some(format!(
-        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content='light dark'><title>{} · {}</title><style>{CSS}{PROMPT_INSPECTOR_CSS}</style></head><body><header class=container><nav><ul><li><a href='/#benchmark-{}'>← Leaderboard</a></li><li><strong>{}</strong></li></ul><ul><li><small>{} · {}</small></li></ul></nav></header><main class=container><nav aria-label='Prompt carousel'><ul><li>{}</li></ul><ul><li><label>Prompt {}/{}<select id=prompt-select>{options}</select></label></li></ul><ul><li>{}</li></ul></nav><hgroup><p>{} · Prompt {}/{}</p><h1>{}</h1></hgroup><p><mark>{}</mark> &nbsp; {passed}/{deterministic} deterministic &nbsp; {proxies} proxy &nbsp; {reviews} review</p><section>{inspector}</section><section class=grid><article><header><h2>Manufacturing context</h2></header>{material}{duplicate_warning}</article><article><header><h2>Prompt</h2></header>{prompt}</article></section><section><h2>Rigor ledger</h2>{rigor}</section><section><h2>Standards and checks</h2><p>Each row names the requirement, verifier, recorded evidence, and exact score treatment.</p><div class=overflow-auto><table class=striped><thead><tr><th>Score treatment</th><th>Requirement / standard</th><th>Verification method</th><th>Evidence</th></tr></thead><tbody>{checks}</tbody></table></div></section></main><script type=module>{PROMPT_PAGE_JS}</script></body></html>",
+        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content='light dark'><title>{} · {}</title><style>{CSS}{PROMPT_INSPECTOR_CSS}</style></head><body><header class=container><nav><ul><li><a href='/#benchmark-{}'>← Leaderboard</a></li><li><strong>{}</strong></li></ul><ul><li><small>{} · {}</small></li></ul></nav></header><main class=container><nav aria-label='Prompt carousel'><ul><li>{}</li></ul><ul><li><label>Prompt {}/{}<select id=prompt-select>{options}</select></label></li></ul><ul><li>{}</li></ul></nav><hgroup><p>{} · Prompt {}/{}</p><h1>{}</h1></hgroup><p><mark>{}</mark> &nbsp; {passed}/{deterministic} deterministic &nbsp; {proxies} proxy &nbsp; {reviews} review</p><section>{inspector}</section><section class=grid><article><header><h2>Manufacturing context</h2></header>{material}{duplicate_warning}</article><article><header><h2>Prompt</h2></header>{prompt}</article></section>{decisions}<section><h2>Rigor ledger</h2>{rigor}</section><section><h2>Standards and checks</h2><p>Each row names the requirement, verifier, recorded evidence, and exact score treatment.</p><div class=overflow-auto><table class=striped><thead><tr><th>Score treatment</th><th>Requirement / standard</th><th>Verification method</th><th>Evidence</th></tr></thead><tbody>{checks}</tbody></table></div></section></main><script type=module>{PROMPT_PAGE_JS}</script></body></html>",
         esc(&task_id),
         kind.name(),
         kind.id(),
@@ -561,6 +565,39 @@ pub fn render_prompt_page(
         esc(&task_id),
         state.1
     ))
+}
+
+fn design_decisions(work_dir: &std::path::Path) -> String {
+    let stock = match std::fs::read_to_string(work_dir.join("starting-stock.json")) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(value) => {
+                let dimensions = value.get("size_mm").and_then(|v| v.as_array()).map(|values| values.iter().map(|v| v.as_f64().map_or_else(|| "?".into(), |n| format!("{n}"))).collect::<Vec<_>>().join(" × ")).unwrap_or_else(|| "Not recorded".into());
+                format!("<article><header><h3>Starting stock · generative</h3></header><p><strong>{dimensions} mm</strong><br>{}<br><small>{}</small></p><footer><code>{}</code></footer></article>", esc(value.get("material").and_then(|v| v.as_str()).unwrap_or("Not recorded")), esc(value.get("basis").and_then(|v| v.as_str()).unwrap_or("No basis recorded")), esc(value.get("model").and_then(|v| v.as_str()).unwrap_or("Model not recorded")))
+            }
+            Err(error) => format!("<article><header><h3>Starting stock · generative</h3></header><p>Invalid extraction artifact: {}</p></article>", esc(&error.to_string())),
+        },
+        Err(_) => "<article><header><h3>Starting stock · generative</h3></header><p>Not recorded</p></article>".into(),
+    };
+    let trace = match std::fs::read_to_string(work_dir.join("decisions.json")) {
+        Ok(text) => match serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+            Ok(values) if !values.is_empty() => {
+                let rows = values.iter().map(|value| {
+                    let confidence = value.get("confidence").and_then(|v| v.as_f64());
+                    let gate = confidence.map_or("Not recorded", |score| if score >= 0.70 { "Accepted" } else { "Below 0.70" });
+                    format!("<tr><th scope=row><code>{}</code></th><td>{}</td><td>{}</td><td>{gate}</td></tr>", esc(value.get("key").and_then(|v| v.as_str()).unwrap_or("Unknown")), esc(value.get("chosen").and_then(|v| v.as_str()).unwrap_or("Not recorded")), confidence.map_or_else(|| "—".into(), |v| format!("{v:.2}")))
+                }).collect::<String>();
+                format!(
+                    "<div class=overflow-auto><table class=striped><thead><tr><th>Question</th><th>Applied choice</th><th>Confidence</th><th>Gate</th></tr></thead><tbody>{rows}</tbody></table></div>"
+                )
+            }
+            Ok(_) => "<p>No bounded decisions recorded.</p>".into(),
+            Err(error) => format!("<p>Invalid decision trace: {}</p>", esc(&error.to_string())),
+        },
+        Err(_) => "<p>Not recorded</p>".into(),
+    };
+    format!(
+        "<section><h2>Design decisions</h2><div class=grid>{stock}<article><header><h3>Geometry · RLCD</h3></header>{trace}</article></div></section>"
+    )
 }
 
 fn artifact_inspector(
@@ -1287,6 +1324,37 @@ mod tests {
             assert!(html.contains(expected), "missing {expected}");
         }
         assert!(html.contains("drawing.pdf#view=FitH"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prompt_decisions_show_generative_stock_and_rlcd_choices() {
+        let root =
+            std::env::temp_dir().join(format!("eval-prompt-decisions-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("starting-stock.json"),
+            r#"{"schema":"transmog.starting-stock.v1","size_mm":[100,60,20],"material":"304 stainless steel","model":"or/z-ai/glm-5.3-flash","basis":"The brief states it."}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("decisions.json"),
+            r#"[{"key":"bore_layout","type":"choice","chosen":"rectangular_four","confidence":1.0}]"#,
+        )
+        .unwrap();
+        let html = design_decisions(&root);
+        for expected in [
+            "Starting stock · generative",
+            "100 × 60 × 20 mm",
+            "304 stainless steel",
+            "or/z-ai/glm-5.3-flash",
+            "Geometry · RLCD",
+            "bore_layout",
+            "rectangular_four",
+            "Accepted",
+        ] {
+            assert!(html.contains(expected), "missing {expected}");
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 }
