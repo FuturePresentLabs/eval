@@ -505,9 +505,14 @@ pub fn render_prompt_page(
         .as_ref()
         .and_then(|path| path.strip_prefix(&task.work_dir).ok())
         .map(|path| path.to_string_lossy().into_owned());
+    let components = model_components(model_id, kind, index, &task.work_dir);
     let model = final_stl.map_or_else(|| "<div class=model-empty><strong>Final STL not recorded</strong><p>This run did not produce an STL artifact.</p></div>".to_owned(), |relative| {
         let href = format!("/artifact/{model_id}/{}/{index}/{relative}", kind.id());
-        format!("<div id=stl-viewer data-src='{href}' data-color='{}' data-metalness='{}' data-roughness='{}' aria-label='Interactive final STL viewer' aria-busy=true>Loading model…</div><footer><small>Drag to rotate · scroll to zoom</small> · <a href='{href}' download>Download STL</a></footer>", pbr.0, pbr.1, pbr.2)
+        let sidebar = if components.is_empty() { String::new() } else {
+            let toggles = components.iter().enumerate().map(|(position, component)| format!("<label><input type=checkbox checked data-component-toggle={position} data-component-src='{}'> {}</label>", esc_attr(&component.href), esc(&component.name))).collect::<String>();
+            format!("<aside class=component-sidebar><strong>Components</strong>{toggles}</aside>")
+        };
+        format!("<div class=model-viewer-shell>{sidebar}<div id=stl-viewer data-src='{href}' data-component-count={} data-color='{}' data-metalness='{}' data-roughness='{}' aria-label='Interactive final STL viewer' aria-busy=true>Loading model…</div></div><footer><small>Drag to rotate · scroll to zoom</small> · <a href='{href}' download>Download assembly STL</a></footer>", components.len(), pbr.0, pbr.1, pbr.2)
     });
     let inspector = artifact_inspector(model_id, kind, index, &task.work_dir, &artifacts, model);
     let options = report
@@ -626,9 +631,75 @@ fn design_decisions(work_dir: &std::path::Path) -> String {
         let rows = calls.iter().map(|call| format!("<tr><td><code>{}</code></td><td>{}</td><td><code>{}</code></td></tr>", esc(call.get("tool").and_then(|v| v.as_str()).unwrap_or("Unknown")), call.get("body").and_then(|v| v.as_u64()).map_or("—".into(), |v| v.to_string()), esc(call.get("ip").and_then(|v| v.as_str()).unwrap_or("—")))).collect::<String>();
         format!("<section><h3>Recipe composition</h3><div class=overflow-auto><table class=striped><thead><tr><th>Lua tool</th><th>Body</th><th>Standard input</th></tr></thead><tbody>{rows}</tbody></table></div></section>")
     }).unwrap_or_default();
+    let flow = decision_flow(work_dir);
     format!(
-        "<section><h2>Design decisions</h2><div class=grid>{input}<article><header><h3>Geometry · RLCD</h3></header>{trace}</article>{ingress}{fastener}</div>{composition}</section>"
+        "<section><h2>Design decisions</h2>{flow}<div class=grid>{input}<article><header><h3>Geometry · RLCD</h3></header>{trace}</article>{ingress}{fastener}</div>{composition}</section>"
     )
+}
+
+fn decision_flow(work_dir: &std::path::Path) -> String {
+    let decisions = std::fs::read_to_string(work_dir.join("decisions.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Vec<serde_json::Value>>(&text).ok())
+        .unwrap_or_default();
+    let bounded = decisions
+        .iter()
+        .map(|value| {
+            format!(
+                "<li><strong>{}</strong><span>{}</span></li>",
+                esc(value
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unnamed question")),
+                esc(value
+                    .get("chosen")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Not recorded")),
+            )
+        })
+        .collect::<String>();
+    let bounded = if bounded.is_empty() {
+        "<li><strong>RLCD decisions</strong><span>Not recorded</span></li>".into()
+    } else {
+        bounded
+    };
+    format!(
+        "<details class=decision-flow><summary>Decision flow</summary><ol><li><strong>Brief</strong><span>Human requirements</span></li><li><strong>Product inputs</strong><span>GLM extraction</span></li><li><strong>Standards</strong><span>Rust / black_book constraints</span></li>{bounded}<li><strong>Composition</strong><span>Lua tools → IR</span></li><li><strong>DesignDocument</strong><span>Validated Rust IR → kernel</span></li></ol></details>"
+    )
+}
+
+struct ModelComponent {
+    name: String,
+    href: String,
+}
+
+fn model_components(
+    model_id: &str,
+    kind: BenchmarkKind,
+    index: usize,
+    work_dir: &std::path::Path,
+) -> Vec<ModelComponent> {
+    let manifest_path = work_dir.join("assembly/components.json");
+    let Some(value) = std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return Vec::new();
+    };
+    value
+        .get("components")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|component| {
+            let name = component.get("name")?.as_str()?.to_owned();
+            let stl = component.get("stl")?.as_str()?;
+            Some(ModelComponent {
+                name,
+                href: format!("/artifact/{model_id}/{}/{index}/assembly/{stl}", kind.id()),
+            })
+        })
+        .collect()
 }
 
 fn artifact_inspector(
@@ -676,6 +747,10 @@ fn artifact_inspector(
                 "PCB layout"
             };
             views.push((label.into(), format!("<div class='inspection-stage image-stage'><img src='{href}' alt='{}'></div><footer><span>Generated {label} artifact.</span><span><a href='{href}' target=_blank>Open full size</a> · <a href='{href}' download>Download</a></span></footer>", esc(name))));
+        } else if extension == "ron" && lower == "design" {
+            let source = std::fs::read_to_string(path)
+                .unwrap_or_else(|error| format!("Unable to read DesignDocument: {error}"));
+            views.push(("DesignDocument".into(), format!("<div class='inspection-stage design-document'><pre><code>{}</code></pre></div><footer><span>Canonical editable IR produced by the run.</span><a href='{href}' download>Download design.ron</a></footer>", esc(&source))));
         }
     }
     if views.is_empty() {
@@ -1043,6 +1118,10 @@ fn esc(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn esc_attr(text: &str) -> String {
+    esc(text).replace('\'', "&#39;")
+}
+
 const JS: &str = r#"
 const tabs=[...document.querySelectorAll('.bench-tab:not(:disabled)')];
 const panels=[...document.querySelectorAll('.bench-panel')];
@@ -1077,7 +1156,7 @@ bench.addEventListener('change',drawPareto);const requested=location.hash.replac
 const CSS: &str = include_str!("../assets/pico.min.css");
 
 const PROMPT_INSPECTOR_CSS: &str = r#"
-.artifact-inspector>header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.artifact-inspector>header h2{margin-bottom:.15rem}.artifact-inspector>nav[role=tablist]{display:flex;gap:.45rem;overflow-x:auto;padding:.65rem 0;border-bottom:1px solid var(--pico-muted-border-color)}.artifact-inspector [role=tab]{width:auto;margin:0;padding:.55rem .85rem;white-space:nowrap}.artifact-inspector [role=tab][aria-selected=false]{background:transparent;color:var(--pico-muted-color)}.inspection-stage{min-height:620px;background:#151a20}.inspection-stage iframe{display:block;width:100%;height:min(78vh,980px);min-height:620px;border:0;background:#d7d9dc}.image-stage{display:grid;place-items:center;overflow:auto;padding:1rem;background:#30343a}.image-stage img{display:block;max-width:none;width:auto;min-width:min(100%,900px);height:auto}.glb-stage canvas{display:block;width:100%;height:100%}.artifact-inspector [role=tabpanel]>footer{display:flex;justify-content:space-between;gap:1rem;padding-top:.75rem}.artifact-inspector:fullscreen{overflow:auto;padding:1rem;background:var(--pico-background-color)}.artifact-inspector:fullscreen .inspection-stage,.artifact-inspector:fullscreen .inspection-stage iframe{height:calc(100vh - 11rem);min-height:0}.artifact-inspector:fullscreen #stl-viewer{height:calc(100vh - 11rem);min-height:0}@media(max-width:700px){.inspection-stage,.inspection-stage iframe{min-height:480px}.artifact-inspector [role=tabpanel]>footer{align-items:flex-start;flex-direction:column}}
+.artifact-inspector>header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.artifact-inspector>header h2{margin-bottom:.15rem}.artifact-inspector>nav[role=tablist]{display:flex;gap:.45rem;overflow-x:auto;padding:.65rem 0;border-bottom:1px solid var(--pico-muted-border-color)}.artifact-inspector [role=tab]{width:auto;margin:0;padding:.55rem .85rem;white-space:nowrap}.artifact-inspector [role=tab][aria-selected=false]{background:transparent;color:var(--pico-muted-color)}.inspection-stage{min-height:620px;background:#151a20}.inspection-stage iframe{display:block;width:100%;height:min(78vh,980px);min-height:620px;border:0;background:#d7d9dc}.image-stage{display:grid;place-items:center;overflow:auto;padding:1rem;background:#30343a}.image-stage img{display:block;max-width:none;width:auto;min-width:min(100%,900px);height:auto}.glb-stage canvas{display:block;width:100%;height:100%}.artifact-inspector [role=tabpanel]>footer{display:flex;justify-content:space-between;gap:1rem;padding-top:.75rem}.artifact-inspector:fullscreen{overflow:auto;padding:1rem;background:var(--pico-background-color)}.artifact-inspector:fullscreen .inspection-stage,.artifact-inspector:fullscreen .inspection-stage iframe{height:calc(100vh - 11rem);min-height:0}.artifact-inspector:fullscreen #stl-viewer{height:calc(100vh - 11rem);min-height:0}.model-viewer-shell{display:grid;grid-template-columns:minmax(11rem,16rem) 1fr;background:#151a20}.component-sidebar{z-index:1;margin:0;padding:1rem;border-right:1px solid #39414b;background:#1d232b;color:#eef2f6}.component-sidebar strong{display:block;margin-bottom:.8rem}.component-sidebar label{display:flex;align-items:center;gap:.55rem;margin:.35rem 0;color:#eef2f6;font-size:.9rem}.component-sidebar input{margin:0}.model-viewer-shell #stl-viewer{min-width:0}.design-document{overflow:auto;padding:1rem;background:var(--pico-code-background-color)}.design-document pre{margin:0;white-space:pre;overflow:visible}.decision-flow{margin-bottom:1rem}.decision-flow ol{display:flex;align-items:stretch;gap:.7rem;overflow-x:auto;padding:1rem 0;list-style:none}.decision-flow li{position:relative;min-width:10rem;padding:.75rem;border:1px solid var(--pico-muted-border-color);border-radius:var(--pico-border-radius)}.decision-flow li:not(:last-child)::after{position:absolute;top:50%;right:-.58rem;content:'→';color:var(--pico-muted-color)}.decision-flow strong,.decision-flow span{display:block}.decision-flow span{margin-top:.2rem;color:var(--pico-muted-color);font-size:.8rem}@media(max-width:700px){.inspection-stage,.inspection-stage iframe{min-height:480px}.artifact-inspector [role=tabpanel]>footer{align-items:flex-start;flex-direction:column}.model-viewer-shell{grid-template-columns:1fr}.component-sidebar{border-right:0;border-bottom:1px solid #39414b}}
 "#;
 
 const SCORE_EXPLAINER_CSS: &str = r#"
@@ -1152,8 +1231,10 @@ const {OrbitControls}=await import('https://esm.sh/three@0.180.0/examples/jsm/co
 const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.15;host.replaceChildren(renderer.domElement);
 const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(36,1,.01,1000),controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.autoRotate=false;
 scene.add(new THREE.HemisphereLight(0xffffff,0x303842,2.1));const key=new THREE.DirectionalLight(0xffffff,3.2);key.position.set(3,4,5);scene.add(key);const rim=new THREE.DirectionalLight(0x9db8ff,1.8);rim.position.set(-4,1,-3);scene.add(rim);
-const geometry=await new STLLoader().loadAsync(host.dataset.src);geometry.computeVertexNormals();geometry.center();const bounds=new THREE.Box3().setFromBufferAttribute(geometry.attributes.position),size=bounds.getSize(new THREE.Vector3()),radius=Math.max(size.x,size.y,size.z)/2||1;
-const material=new THREE.MeshStandardMaterial({color:new THREE.Color(host.dataset.color),metalness:Number(host.dataset.metalness),roughness:Number(host.dataset.roughness)}),mesh=new THREE.Mesh(geometry,material);mesh.rotation.x=-Math.PI/2;scene.add(mesh);camera.position.set(radius*2.4,radius*1.7,radius*2.4);camera.near=radius/100;camera.far=radius*100;camera.updateProjectionMatrix();controls.target.set(0,0,0);controls.minDistance=radius*.6;controls.maxDistance=radius*8;
+const loader=new STLLoader(),toggles=[...document.querySelectorAll('[data-component-toggle]')],group=new THREE.Group(),meshes=[];
+const sources=toggles.length?toggles.map(toggle=>toggle.dataset.componentSrc):[host.dataset.src];
+const geometries=await Promise.all(sources.map(source=>loader.loadAsync(source)));geometries.forEach((geometry,index)=>{geometry.computeVertexNormals();const material=new THREE.MeshStandardMaterial({color:new THREE.Color(host.dataset.color),metalness:Number(host.dataset.metalness),roughness:Number(host.dataset.roughness)}),mesh=new THREE.Mesh(geometry,material);meshes.push(mesh);group.add(mesh);toggles[index]?.addEventListener('change',event=>mesh.visible=event.target.checked)});scene.add(group);
+const bounds=new THREE.Box3().setFromObject(group),center=bounds.getCenter(new THREE.Vector3()),size=bounds.getSize(new THREE.Vector3()),radius=Math.max(size.x,size.y,size.z)/2||1;group.position.sub(center);group.rotation.x=-Math.PI/2;camera.position.set(radius*2.4,radius*1.7,radius*2.4);camera.near=radius/100;camera.far=radius*100;camera.updateProjectionMatrix();controls.target.set(0,0,0);controls.minDistance=radius*.6;controls.maxDistance=radius*8;
 const resize=()=>{const w=host.clientWidth,h=Math.min(Math.max(Math.round(w*.62),360),620);renderer.setSize(w,h,true);camera.aspect=w/h;camera.updateProjectionMatrix()};new ResizeObserver(resize).observe(host);resize();host.removeAttribute('aria-busy');renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera)});
 }catch(error){console.error(error);host.innerHTML='<div class=model-error><strong>STL preview unavailable</strong><p>The artifact is still available from the download link below.</p></div>'}}
 for(const glbHost of document.querySelectorAll('[data-glb-viewer]')){try{
@@ -1276,6 +1357,7 @@ mod tests {
             tasks: vec![SuiteTaskResult {
                 task_file: PathBuf::from("missing-task.toml"),
                 work_dir: PathBuf::from("missing-results"),
+                task_type: Some("surface-part".into()),
                 task_metadata: Some(metadata),
                 metadata_error: None,
                 criterion_definitions: [(
@@ -1354,6 +1436,8 @@ mod tests {
             "Scroll normally through every page.",
             "data-fullscreen-inspector",
             "role=tablist",
+            "DesignDocument",
+            "Download design.ron",
         ] {
             assert!(html.contains(expected), "missing {expected}");
         }
@@ -1386,6 +1470,7 @@ mod tests {
             r#"[{"tool":"enclosure","body":0},{"tool":"connector_cutouts","body":0,"ip":"IP65"}]"#,
         )
         .unwrap();
+        std::fs::write(root.join("design.ron"), "(schema_version: 1)").unwrap();
         let html = design_decisions(&root);
         for expected in [
             "Starting stock · generative",
@@ -1404,9 +1489,34 @@ mod tests {
             "⌀2.700 mm",
             "Recipe composition",
             "connector_cutouts",
+            "Decision flow",
+            "Brief",
+            "GLM extraction",
+            "Rust / black_book constraints",
+            "Lua tools → IR",
         ] {
             assert!(html.contains(expected), "missing {expected}");
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn component_manifest_builds_independent_model_controls() {
+        let root =
+            std::env::temp_dir().join(format!("eval-model-components-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("assembly/components")).unwrap();
+        std::fs::write(
+            root.join("assembly/components.json"),
+            r#"{"schema":"transmog.components.v1","components":[{"id":0,"name":"Enclosure base","stl":"components/body-0.stl"},{"id":1,"name":"Enclosure lid","stl":"components/body-1.stl"}]}"#,
+        )
+        .unwrap();
+        let components = model_components("model", BenchmarkKind::Cad, 3, &root);
+        assert_eq!(components.len(), 2);
+        assert_eq!(components[0].name, "Enclosure base");
+        assert_eq!(
+            components[1].href,
+            "/artifact/model/cad/3/assembly/components/body-1.stl"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
