@@ -62,10 +62,16 @@
 //! ```
 
 mod backend;
+mod bundle;
 mod score;
 mod task;
 pub mod testing;
 
 pub use backend::Backend;
+pub use bundle::{
+    ArtifactRef, BenchmarkIdentity, BundleError, CatalogEntry, MetricDefinition, MetricGoal,
+    MetricObservation, Provenance, RESULT_BUNDLE_SCHEMA, RESULT_CATALOG_SCHEMA, ResultBundle,
+    ResultCatalog, RunRecord, SubjectIdentity,
+};
 pub use score::{CriterionResult, ScoreReport, Verdict};
 pub use task::{Criterion, Task};
