@@ -1,6 +1,6 @@
 //! Self-contained, benchmark-neutral HTML viewer for suite reports.
 
-use crate::{SuiteReport, Verdict};
+use crate::{SuiteReport, TaskMetadata, Verdict};
 
 /// One of the benchmark disciplines presented by the shared viewer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +112,11 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
             .filter_map(|model| model.report(kind).map(score))
             .fold(0.0_f64, f64::max)
     });
+    let overall_winner = models
+        .iter()
+        .filter(|model| coverage(model) > 0)
+        .map(overall)
+        .fold(0.0_f64, f64::max);
     let mut order: Vec<_> = models.iter().collect();
     order.sort_by(|a, b| {
         overall(b)
@@ -124,45 +129,69 @@ pub fn render_leaderboard(models: &[ModelView<'_>], primers: &[BenchmarkPrimer])
                 let value = score(report);
                 let text = format!("{value:.1}");
                 let shown = if (value - winners[column]).abs() < 0.0001 { format!("<strong>{text}</strong>") } else { text };
-                format!("<td data-score='{value}'><a href='#evidence-{}-{}'>{shown}<small>{}/{}</small></a></td>", esc(model.id), kind.id(), report.passed, report.total)
+                format!("<td data-score='{value}'><a href='/prompt/{}/{}/0'>{shown}</a></td>", esc(model.id), kind.id())
             }
-            None => "<td data-score='-1' class=missing-score><span>Not run</span><small>No result recorded</small></td>".to_owned(),
+            None => "<td data-score='-1'>—</td>".to_owned(),
         }).collect::<String>();
-        let specialties = kinds.iter().enumerate().filter_map(|(column, kind)| model.report(*kind).map(score).filter(|value| (*value - winners[column]).abs() < 0.0001).map(|_| format!("{} {}", kind.emoji(), kind.name()))).collect::<Vec<_>>().join(", ");
-        let alias = model.alias.map_or(String::new(), |alias| format!("<small>Alias: {}</small>", esc(alias)));
-        let model_role = |value: Option<&str>| value.map_or_else(|| "<span class=not-applicable>Not applicable</span>".to_owned(), |value| if value == "Not recorded" { "<span class=missing-identity>Not recorded</span><small>Identity missing from run</small>".to_owned() } else { format!("<strong>{}</strong>", esc(value)) });
+        let is_model = |value: &&str| !matches!(*value, "Not recorded" | "TBD" | "Not applicable");
+        let configuration = [model.rlcd_model, model.generative_model]
+            .into_iter()
+            .flatten()
+            .filter(is_model)
+            .map(esc)
+            .collect::<Vec<_>>()
+            .join(" → ");
         let covered = coverage(model);
-        let overall_cell = if covered == 0 { "<td data-score='-1' class=missing-score><span>Not run</span><small>No benchmark results</small></td>".to_owned() } else { format!("<td data-score='{:.3}'><strong>{:.1}</strong><small>{covered}/4 benchmarks run</small></td>", overall(model), overall(model)) };
-        format!("<tr><td class=rank>{}</td><th scope=row><strong>{}</strong><small>{}</small>{alias}</th><td>{}</td><td>{}</td><td><strong>{}</strong></td>{overall_cell}{scores}<td class=specialty>{}</td></tr>", rank + 1, esc(model.name), esc(model.organization.unwrap_or("Independent")), model_role(model.rlcd_model), model_role(model.generative_model), esc(model.harness), if specialties.is_empty() { "No leading result".to_owned() } else { esc(&specialties) })
+        let overall_cell = if covered == 0 { "<td data-score='-1'>—</td>".to_owned() } else { let value = overall(model); let shown = if (value - overall_winner).abs() < 0.0001 { format!("<strong>{value:.1}</strong>") } else { format!("{value:.1}") }; format!("<td data-score='{value:.3}'>{shown}</td>") };
+        format!("<tr><td>{}</td><th scope=row><code>{}</code></th><td>{}</td>{overall_cell}{scores}</tr>", rank + 1, if configuration.is_empty() { "—".to_owned() } else { configuration }, esc(model.harness))
     }).collect::<String>();
-    let evidence = order.iter().flat_map(|model| kinds.iter().filter_map(move |kind| model.report(*kind).map(|report| {
-        let tasks = report.tasks.iter().enumerate().map(|(index, task)| task_card(Some(model.id), *kind, index, task)).collect::<String>();
-        format!("<section class=evidence id='evidence-{}-{}'><header><div><h2>{}</h2><p>{} · {:.1} · {}/{} passed</p></div><a href=#leaderboard>Back to leaderboard</a></header><div class=task-list>{tasks}</div></section>", esc(model.id), kind.id(), esc(model.name), kind.name(), score(report), report.passed, report.total)
-    }))).collect::<String>();
+    let evidence = String::new();
     let chart_data = chart_data(models, &kinds);
     let active = Some(BenchmarkKind::Cad);
     let switcher = kinds.iter().map(|kind| {
-        format!("<button class=benchmark-tab role=tab data-bench={} aria-controls=primer-{} aria-selected={}><span>{}</span> {}</button>", kind.id(), kind.id(), active == Some(*kind), kind.emoji(), kind.name())
+        format!("<li><button class=benchmark-tab role=tab data-bench={} aria-controls=primer-{} aria-selected={}><span>{}</span> {}</button></li>", kind.id(), kind.id(), active == Some(*kind), kind.emoji(), kind.name())
     }).collect::<String>();
     let primers_html = kinds.iter().map(|kind| {
-        let body = primers.iter().find(|primer| primer.kind == *kind).map_or_else(|| "<div class=primer-empty><strong>Description not recorded</strong><p>Add this benchmark's README source to the leaderboard index. Results can still be displayed independently.</p></div>".to_owned(), |primer| format!("<div class=readme-copy>{}</div>", primer.html));
-        format!("<article id=primer-{} class='benchmark-primer-panel {}' data-bench={} role=tabpanel {}><header><span>{}</span><div><h2>{}</h2><p>What it tests and how it is scored</p></div></header>{body}</article>", kind.id(), kind.id(), kind.id(), if active == Some(*kind) { "" } else { "hidden" }, kind.emoji(), kind.name())
+        let (status, body) = primers
+            .iter()
+            .find(|primer| primer.kind == *kind)
+            .map_or_else(
+                || (
+                    "Benchmark definition not recorded",
+                    "<p>No README source is configured for this benchmark yet.</p>".to_owned(),
+                ),
+                |primer| (
+                    "README-backed benchmark definition",
+                    format!("<section class=readme-copy>{}</section>", primer.html),
+                ),
+            );
+        format!("<article id=primer-{} class='benchmark-primer-panel {}' data-bench={} role=tabpanel {}><header><hgroup><p>{}</p><h2>{}</h2></hgroup></header>{body}</article>", kind.id(), kind.id(), kind.id(), if active == Some(*kind) { "" } else { "hidden" }, kind.emoji(), if status == "Benchmark definition not recorded" { status } else { kind.name() })
     }).collect::<String>();
     let rows = if rows.is_empty() {
-        "<tr class=empty-row><td colspan=11><strong>No benchmark configurations recorded</strong><span>Add model roles, a harness, and a suite report to the leaderboard index.</span></td></tr>".to_owned()
+        "<tr><td colspan=8>No benchmark configurations recorded.</td></tr>".to_owned()
     } else {
         rows
     };
     format!(
-        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>FPL decision model leaderboard</title><style>{CSS}{LEADERBOARD_CSS}</style></head><body><header class=site-head><a class=wordmark href=#leaderboard>FPL <span>decision model index</span></a><div class=header-actions><div class=monitor-controls><button type=button id=refresh>Refresh</button><label><input id=live type=checkbox checked> Live</label></div><nav class=benchmark-switcher aria-label='Benchmark' role=tablist>{switcher}</nav></div></header><main id=leaderboard><div class=leader-head><div><h1>Decision models × harnesses</h1><p>Comparable configurations. Column leaders are bold.</p></div><span>{} evaluated</span></div><section class=benchmark-guide>{primers_html}</section><div class=leader-wrap><table class=leader-table><thead><tr><th>Rank</th><th>Decision model</th><th>Harness</th><th><button data-column=3>Overall</button></th><th><button data-column=4>⚡ PCB</button></th><th><button data-column=5>📐 CAD</button></th><th><button data-column=6>⚙️ CAM</button></th><th><button data-column=7>🏭 DFM</button></th><th>Specialties</th></tr></thead><tbody>{rows}</tbody></table></div><section class=pareto-shell><header><div><h2>Quality frontier</h2><p>Best tradeoffs rise toward the upper left.</p></div><div><select id=pareto-bench aria-label=Benchmark><option value=overall>Overall</option><option value=pcb>PCB</option><option value=cad>CAD</option><option value=cam>CAM</option><option value=dfm>DFM</option></select><select id=pareto-x aria-label='X axis'><option value=cost>Cost / task</option></select></div></header><svg id=pareto role=img aria-label='Model score versus price' viewBox='0 0 1000 430'></svg><p id=pareto-empty hidden>No measured price per task for this benchmark.</p></section>{evidence}</main><script>const paretoData={chart_data};{LEADERBOARD_JS}</script></body></html>",
+        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>FPL decision model leaderboard</title><style>{CSS}{LEADERBOARD_CSS}</style></head><body><header class=site-head><a class=wordmark href=#leaderboard>FPL <span>decision model index</span></a><div class=header-actions><div class=monitor-controls><button type=button id=refresh>Refresh</button><label><input id=live type=checkbox checked> Live</label></div><nav class=benchmark-switcher aria-label='Benchmark' role=tablist>{switcher}</nav></div></header><main id=leaderboard><div class=leader-head><div><h1>Decision models × harnesses</h1><p>Comparable configurations. Column leaders are bold.</p></div><span>{} evaluated</span></div><section class=benchmark-guide>{primers_html}</section><article class=pareto-shell><header><h2>Price / score frontier</h2><select id=pareto-bench aria-label=Benchmark><option value=overall>Overall</option><option value=pcb>PCB</option><option value=cad>CAD</option><option value=cam>CAM</option><option value=dfm>DFM</option></select><select id=pareto-x aria-label='X axis'><option value=cost>Cost / task</option></select></header><svg id=pareto role=img aria-label='Model score versus price' viewBox='0 0 1000 430' width='100%' height='430' hidden></svg><p id=pareto-empty hidden>Come back soon.</p></article><div class=leader-wrap><table class=leader-table><thead><tr><th>Rank</th><th>Configuration</th><th>Harness</th><th><a href=# data-column=3>Overall</a></th><th><a href=# data-column=4>⚡ PCB</a></th><th><a href=# data-column=5>📐 CAD</a></th><th><a href=# data-column=6>⚙️ CAM</a></th><th><a href=# data-column=7>🏭 DFM</a></th></tr></thead><tbody>{rows}</tbody></table></div>{evidence}</main><script>const paretoData={chart_data};{LEADERBOARD_JS}</script></body></html>",
         models.len(),
     )
+    .replace(&format!("<span>{} evaluated</span>", models.len()), "")
     .replace("FPL decision model leaderboard", "FPL evaluation leaderboard")
     .replace("decision model index", "evaluation index")
     .replace("Decision models × harnesses", "Evaluation leaderboard")
-    .replace("Comparable configurations. Column leaders are bold.", "Decision model × harness configurations. Planned rows remain visible before results exist.")
-    .replace(" evaluated</span>", " configurations</span>")
+    .replace("<p>Comparable configurations. Column leaders are bold.</p>", "")
+    .replace("<nav class=benchmark-switcher aria-label='Benchmark' role=tablist>", "<nav class=benchmark-switcher aria-label='Benchmark' role=tablist><ul>")
+    .replace("</nav></div></header><main id=leaderboard>", "</ul></nav></div></header><main id=leaderboard>")
+    .replace("<meta name=viewport content='width=device-width,initial-scale=1'>", "<meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content='light dark'>")
+    .replace("<header class=site-head><a class=wordmark href=#leaderboard>FPL <span>evaluation index</span></a><div class=header-actions><div class=monitor-controls><button type=button id=refresh>Refresh</button><label><input id=live type=checkbox checked> Live</label></div><nav class=benchmark-switcher aria-label='Benchmark' role=tablist><ul>", "<header class=container><nav aria-label='Benchmark'><ul><li><strong>FPL evaluation index</strong></li></ul><ul>")
+    .replace("</ul></nav></div></header><main id=leaderboard>", "<li><button id=theme-toggle class=secondary type=button>Theme</button></li></ul></nav></header><main id=leaderboard class=container>")
+    .replace("<div class=leader-wrap>", "<div class=overflow-auto>")
+    .replace("<table class=leader-table>", "<table class='leader-table striped'>")
+    .replace("<th><button data-column=3>Overall</button></th><th><button data-column=4>⚡ PCB</button></th><th><button data-column=5>📐 CAD</button></th><th><button data-column=6>⚙️ CAM</button></th><th><button data-column=7>🏭 DFM</button></th>", "<th><a href=# data-column=3>Overall</a></th><th><a href=# data-column=4>⚡ PCB</a></th><th><a href=# data-column=5>📐 CAD</a></th><th><a href=# data-column=6>⚙️ CAM</a></th><th><a href=# data-column=7>🏭 DFM</a></th>")
+    .replace("<th><button data-column=5>Overall</button></th><th><button data-column=6>⚡ PCB</button></th><th><button data-column=7>📐 CAD</button></th><th><button data-column=8>⚙️ CAM</button></th><th><button data-column=9>🏭 DFM</button></th>", "<th><a href=# data-column=5>Overall</a></th><th><a href=# data-column=6>⚡ PCB</a></th><th><a href=# data-column=7>📐 CAD</a></th><th><a href=# data-column=8>⚙️ CAM</a></th><th><a href=# data-column=9>🏭 DFM</a></th>")
     .replace("<th>Decision model</th><th>Harness</th><th><button data-column=3>Overall</button></th><th><button data-column=4>⚡ PCB</button></th><th><button data-column=5>📐 CAD</button></th><th><button data-column=6>⚙️ CAM</button></th><th><button data-column=7>🏭 DFM</button></th>", "<th>Configuration</th><th>RLCD model</th><th>Generative model</th><th>Harness</th><th><button data-column=5>Overall</button></th><th><button data-column=6>⚡ PCB</button></th><th><button data-column=7>📐 CAD</button></th><th><button data-column=8>⚙️ CAM</button></th><th><button data-column=9>🏭 DFM</button></th>")
+    .replace("<th>Decision model</th><th>Harness</th><th><a href=# data-column=3>Overall</a></th><th><a href=# data-column=4>⚡ PCB</a></th><th><a href=# data-column=5>📐 CAD</a></th><th><a href=# data-column=6>⚙️ CAM</a></th><th><a href=# data-column=7>🏭 DFM</a></th>", "<th>Configuration</th><th>RLCD model</th><th>Generative model</th><th>Harness</th><th><a href=# data-column=5>Overall</a></th><th><a href=# data-column=6>⚡ PCB</a></th><th><a href=# data-column=7>📐 CAD</a></th><th><a href=# data-column=8>⚙️ CAM</a></th><th><a href=# data-column=9>🏭 DFM</a></th>")
 }
 
 fn chart_data(models: &[ModelView<'_>], kinds: &[BenchmarkKind; 4]) -> String {
@@ -373,18 +402,18 @@ pub fn render_prompt_page(
     );
     let brief = task_brief(&task.task_file);
     let standards = task_standards(&task.task_file);
-    let automated = scored.map_or(0, |value| {
+    let deterministic = scored.map_or(0, |value| {
         value
             .results
             .iter()
-            .filter(|result| result.verdict != Verdict::NeedsHuman)
+            .filter(|result| result.verdict != Verdict::NeedsHuman && !is_proxy(result))
             .count()
     });
     let passed = scored.map_or(0, |value| {
         value
             .results
             .iter()
-            .filter(|result| result.verdict == Verdict::Pass)
+            .filter(|result| result.verdict == Verdict::Pass && !is_proxy(result))
             .count()
     });
     let failed = scored.map_or(0, |value| {
@@ -401,29 +430,76 @@ pub fn render_prompt_page(
             .filter(|result| result.verdict == Verdict::NeedsHuman)
             .count()
     });
+    let proxies = scored.map_or(0, |value| {
+        value
+            .results
+            .iter()
+            .filter(|result| is_proxy(result))
+            .count()
+    });
     let state = if task.error.is_some() {
         ("error", "HARNESS ERROR")
     } else if failed > 0 {
         ("fail", "FAIL")
+    } else if proxies > 0 {
+        ("warn", "PROVISIONAL")
     } else {
         ("pass", "PASS")
     };
-    let checks = scored.map_or_else(|| format!("<div class='empty-detail error'><strong>No score report</strong><p>{}</p></div>", esc(task.error.as_deref().unwrap_or("The harness did not record an error."))), |value| value.results.iter().map(|result| {
-        let (class, mark) = match result.verdict { Verdict::Pass => ("pass", "PASS"), Verdict::Fail => ("fail", "FAIL"), Verdict::NeedsHuman => ("human", "REVIEW") };
+    let checks = scored.map_or_else(|| format!("<p><strong>No score report</strong><br>{}</p>", esc(task.error.as_deref().unwrap_or("No harness error was recorded."))), |value| value.results.iter().map(|result| {
+        let (class, mark) = if is_proxy(result) { ("proxy", "PROXY") } else { match result.verdict { Verdict::Pass => ("pass", "PASS"), Verdict::Fail => ("fail", "FAIL"), Verdict::NeedsHuman => ("human", "REVIEW") } };
         let standard = standards.get(&result.id).map(String::as_str).unwrap_or(&result.id);
-        format!("<article class='standard-card {class}'><header><span class='result-mark'>{mark}</span><div><h3>{}</h3><code>{}</code></div></header><p>{}</p><div class=evidence-copy><strong>Evidence</strong><p>{}</p></div></article>", esc(standard), esc(&result.id), esc(&result.description), esc(&result.detail))
+        format!("<tr class={class}><td><strong>{mark}</strong></td><th scope=row>{}<br><small><code>{}</code></small></th><td>{}</td><td>{}</td></tr>", esc(standard), esc(&result.id), esc(&result.description), esc(&result.detail))
     }).collect::<String>());
     let mut artifacts = Vec::new();
     collect_artifacts(&task.work_dir, &task.work_dir, 0, &mut artifacts);
-    let final_stl = artifacts
-        .iter()
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("stl"))
-        .max_by_key(|path| stl_rank(path))
+    let final_path = final_stl_path(&task.work_dir);
+    let duplicates = final_path.as_ref().map_or(0, |selected| {
+        report
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(other_index, other)| {
+                *other_index != index
+                    && final_stl_path(&other.work_dir)
+                        .is_some_and(|candidate| same_file(selected, &candidate))
+            })
+            .count()
+    });
+    let duplicate_warning = if duplicates > 0 {
+        format!(
+            "<blockquote><strong>Duplicate geometry</strong><br>Same final STL as {duplicates} other prompts.</blockquote>"
+        )
+    } else {
+        String::new()
+    };
+    let material_name = design_material(&task.work_dir);
+    let material_matches = material_name
+        .as_deref()
+        .zip(brief.as_deref())
+        .is_none_or(|(material, prompt)| prompt_mentions_material(prompt, material));
+    let material = material_name.as_deref().map_or_else(
+        || "<p><strong>Material</strong><br>Not recorded</p>".to_owned(),
+        |name| {
+            format!(
+                "<p><strong>Material</strong><br>{} {}</p>",
+                esc(name),
+                if material_matches {
+                    ""
+                } else {
+                    "<mark>Prompt mismatch</mark>"
+                }
+            )
+        },
+    );
+    let pbr = pbr_for_material(material_name.as_deref());
+    let final_stl = final_path
+        .as_ref()
         .and_then(|path| path.strip_prefix(&task.work_dir).ok())
         .map(|path| path.to_string_lossy().into_owned());
     let model = final_stl.map_or_else(|| "<div class=model-empty><strong>Final STL not recorded</strong><p>The prompt page is available, but this run did not produce an STL artifact.</p></div>".to_owned(), |relative| {
         let href = format!("/artifact/{model_id}/{}/{index}/{relative}", kind.id());
-        format!("<canvas id=stl-viewer data-src='{href}' aria-label='Interactive final STL viewer'></canvas><div class=model-tools><span>Drag to rotate · scroll to zoom</span><a href='{href}' download>Download STL</a></div>")
+        format!("<div id=stl-viewer data-src='{href}' data-color='{}' data-metalness='{}' data-roughness='{}' aria-label='Interactive final STL viewer' aria-busy=true>Loading model…</div><footer><small>Drag to rotate · scroll to zoom</small> · <a href='{href}' download>Download STL</a></footer>", pbr.0, pbr.1, pbr.2)
     });
     let options = report
         .tasks
@@ -458,7 +534,140 @@ pub fn render_prompt_page(
             |href| format!("<a href='{href}'>{label}</a>"),
         )
     };
-    Some(format!("<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{} · {}</title><style>{CSS}{LEADERBOARD_CSS}{PROMPT_PAGE_CSS}</style></head><body><header class=site-head><a class=wordmark href='/#evidence-{model_id}-{}'>← Leaderboard</a><div><strong>{}</strong> <span class=muted>× {}</span></div></header><main class=prompt-page><nav class=prompt-carousel>{}<label><span>Prompt {}/{}</span><select id=prompt-select>{options}</select></label>{}</nav><header class=prompt-head><div><p>{} · {}</p><h1>{}</h1></div><div class='run-verdict {}'><strong>{}</strong><span>{passed}/{automated} automated checks passed</span><small>{reviews} human review</small></div></header><section class=prompt-layout><div><section class=prompt-copy><h2>Prompt</h2>{}</section><section class=standards-list><header><h2>Standards & checks</h2><p>Named requirement, verdict, and recorded evidence.</p></header>{checks}</section></div><aside class=model-stage><header><h2>Final model</h2><span>Final STL produced by this prompt</span></header>{model}</aside></section></main><script>{PROMPT_PAGE_JS}</script></body></html>", esc(&task_id), kind.name(), kind.id(), esc(model_name), esc(harness), nav_link(previous, "← Previous"), index + 1, report.tasks.len(), nav_link(next, "Next →"), kind.name(), esc(harness), esc(&task_id), state.0, state.1, brief.as_deref().map_or_else(|| "<div class=empty-detail><strong>Prompt not recorded</strong><p>The task file did not contain a brief.</p></div>".to_owned(), |value| format!("<pre>{}</pre>", esc(value)))))
+    let prompt = brief.as_deref().map_or_else(
+        || "<p><strong>Prompt not recorded</strong></p>".to_owned(),
+        |value| format!("<p>{}</p>", esc(value).replace('\n', "<br>")),
+    );
+    let rigor = rigor_ledger(task);
+    Some(format!(
+        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=color-scheme content='light dark'><title>{} · {}</title><style>{CSS}</style></head><body><header class=container><nav><ul><li><a href='/#benchmark-{}'>← Leaderboard</a></li><li><strong>{}</strong></li></ul><ul><li><small>{} · {}</small></li></ul></nav></header><main class=container><nav aria-label='Prompt carousel'><ul><li>{}</li></ul><ul><li><label>Prompt {}/{}<select id=prompt-select>{options}</select></label></li></ul><ul><li>{}</li></ul></nav><hgroup><p>{} · Prompt {}/{}</p><h1>{}</h1></hgroup><p><mark>{}</mark> &nbsp; {passed}/{deterministic} deterministic &nbsp; {proxies} proxy &nbsp; {reviews} review</p><section class=grid><article><header><h2>Final model</h2></header>{material}{duplicate_warning}{model}</article><article><header><h2>Prompt</h2></header>{prompt}</article></section><section><h2>Rigor ledger</h2>{rigor}</section><section><h2>Checks</h2><p>Pass/fail rows contribute to the task score. Review rows remain unresolved; proxy rows are disclosed separately.</p><div class=overflow-auto><table class=striped><thead><tr><th>Result</th><th>Check</th><th>Requirement</th><th>Evidence</th></tr></thead><tbody>{checks}</tbody></table></div></section></main><script type=module>{PROMPT_PAGE_JS}</script></body></html>",
+        esc(&task_id),
+        kind.name(),
+        kind.id(),
+        esc(model_name),
+        kind.name(),
+        esc(harness),
+        nav_link(previous, "← Previous"),
+        index + 1,
+        report.tasks.len(),
+        nav_link(next, "Next →"),
+        kind.name(),
+        index + 1,
+        report.tasks.len(),
+        esc(&task_id),
+        state.1
+    ))
+}
+
+fn rigor_ledger(task: &crate::SuiteTaskResult) -> String {
+    let fallback = task_metadata(&task.task_file);
+    let metadata = task.task_metadata.as_ref().or(fallback.as_ref());
+    let Some(metadata) = metadata else {
+        let detail = task.metadata_error.as_deref().map_or(
+            "This legacy result has no embedded task metadata.",
+            |error| error,
+        );
+        return format!(
+            "<article><header><strong>Metadata unavailable</strong></header><p>{}</p><footer>It does not add or remove score.</footer></article>",
+            esc(detail)
+        );
+    };
+    let validity = match metadata.validate() {
+        Ok(()) => "Complete",
+        Err(_) => "Incomplete",
+    };
+    let capabilities = metadata
+        .capabilities
+        .iter()
+        .map(|value| format!("<li><code>{}</code></li>", esc(value)))
+        .collect::<String>();
+    let failure_modes = metadata
+        .expected_failure_modes
+        .iter()
+        .map(|value| format!("<li>{}</li>", esc(value)))
+        .collect::<String>();
+    let source = metadata.source.as_deref().unwrap_or("Not declared");
+    format!(
+        "<div class=grid><article><header><strong>{validity} benchmark contract</strong></header><dl><dt>Difficulty</dt><dd>{}</dd><dt>Dataset split</dt><dd>{}</dd><dt>Oracle version</dt><dd><code>{}</code></dd><dt>Source</dt><dd>{}</dd></dl></article><article><header><strong>Capabilities under test</strong></header><ul>{capabilities}</ul><strong>Designed to catch</strong><ul>{failure_modes}</ul></article><article><header><strong>How this affects scoring</strong></header><p>Pass/fail oracle results determine this prompt’s objective score.</p><p>Capabilities group the prompt into capability-macro reporting. Difficulty, split, source, oracle version, and expected failure modes are provenance—they do not award points.</p></article></div>",
+        esc(&format!("{:?}", metadata.difficulty)),
+        esc(&format!("{:?}", metadata.split)),
+        esc(&metadata.oracle_version),
+        esc(source),
+    )
+}
+
+fn task_metadata(path: &std::path::Path) -> Option<TaskMetadata> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .and_then(|task| task.get("metadata").cloned())
+        .and_then(|metadata| metadata.try_into().ok())
+}
+
+fn is_proxy(result: &crate::CriterionResult) -> bool {
+    result.detail.to_ascii_lowercase().contains("proxy")
+}
+
+fn final_stl_path(work_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    collect_artifacts(work_dir, work_dir, 0, &mut paths);
+    paths
+        .into_iter()
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("stl"))
+        .max_by_key(|path| stl_rank(path))
+}
+
+fn same_file(left: &std::path::Path, right: &std::path::Path) -> bool {
+    std::fs::metadata(left).ok().map(|value| value.len())
+        == std::fs::metadata(right).ok().map(|value| value.len())
+        && std::fs::read(left).ok() == std::fs::read(right).ok()
+}
+
+fn design_material(work_dir: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(work_dir.join("design.ron")).ok()?;
+    let intent = text.rsplit_once("intent: ManufacturingIntent(")?.1;
+    let material = intent.split_once("material: Some(IntentText(")?.1;
+    let quoted = material.split_once("text: \"")?.1;
+    Some(quoted.split_once('"')?.0.to_owned())
+}
+
+fn pbr_for_material(material: Option<&str>) -> (&'static str, f32, f32) {
+    let name = material.unwrap_or("").to_ascii_lowercase();
+    if name.contains("brass") || name.contains("bronze") {
+        ("#b8873d", 0.9, 0.28)
+    } else if name.contains("stainless") {
+        ("#aeb5ba", 0.95, 0.24)
+    } else if name.contains("al ") || name.contains("aluminium") || name.contains("aluminum") {
+        ("#aeb7c2", 0.88, 0.32)
+    } else if name.contains("titanium") {
+        ("#8d9299", 0.9, 0.38)
+    } else if name.contains("delrin") || name.contains("acetal") {
+        ("#222629", 0.0, 0.42)
+    } else if name.contains("iron") || name.contains("steel") {
+        ("#626a70", 0.85, 0.48)
+    } else {
+        ("#87939a", 0.0, 0.62)
+    }
+}
+
+fn prompt_mentions_material(prompt: &str, material: &str) -> bool {
+    let prompt = prompt.to_ascii_lowercase();
+    let material = material.to_ascii_lowercase();
+    let families: &[(&[&str], &[&str])] = &[
+        (
+            &["6061", "al ", "aluminum", "aluminium"],
+            &["6061", "aluminum", "aluminium"],
+        ),
+        (&["304", "stainless"], &["304", "stainless"]),
+        (&["brass"], &["brass"]),
+        (&["titanium"], &["titanium"]),
+        (&["delrin", "acetal"], &["delrin", "acetal"]),
+        (&["cast iron"], &["cast iron"]),
+    ];
+    families
+        .iter()
+        .find(|(aliases, _)| aliases.iter().any(|alias| material.contains(alias)))
+        .is_none_or(|(_, expected)| expected.iter().any(|alias| prompt.contains(alias)))
 }
 
 fn stl_rank(path: &std::path::Path) -> (u8, u64) {
@@ -659,22 +868,54 @@ let revision=null;setInterval(async()=>{if(!document.querySelector('#live').chec
 "#;
 
 const LEADERBOARD_JS: &str = r#"
-document.querySelector('#refresh').addEventListener('click',()=>location.reload());
-let revision=null;setInterval(async()=>{if(!document.querySelector('#live').checked)return;try{const next=await fetch('/api/revision',{cache:'no-store'}).then(r=>r.ok?r.text():null);if(revision===null)revision=next;else if(next&&next!==revision)location.reload()}catch(_){}},1000);
+const savedTheme=localStorage.getItem('eval-theme');if(savedTheme)document.documentElement.dataset.theme=savedTheme;
+const themeToggle=document.querySelector('#theme-toggle');
+const activeTheme=()=>document.documentElement.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');
+const updateThemeLabel=()=>{if(themeToggle)themeToggle.textContent=activeTheme()==='dark'?'Light':'Dark'};
+themeToggle?.addEventListener('click',()=>{const next=activeTheme()==='dark'?'light':'dark';document.documentElement.dataset.theme=next;localStorage.setItem('eval-theme',next);updateThemeLabel()});updateThemeLabel();
+document.querySelector('#refresh')?.addEventListener('click',()=>location.reload());
+let revision=null;setInterval(async()=>{const live=document.querySelector('#live');if(live&&!live.checked)return;try{const next=await fetch('/api/revision',{cache:'no-store'}).then(r=>r.ok?r.text():null);if(revision===null)revision=next;else if(next&&next!==revision)location.reload()}catch(_){}},1000);
 const benchmarkTabs=[...document.querySelectorAll('.benchmark-tab:not(:disabled)')],primerPanels=[...document.querySelectorAll('.benchmark-primer-panel')];
 function selectBenchmark(id){benchmarkTabs.forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.bench===id)));primerPanels.forEach(panel=>panel.hidden=panel.dataset.bench!==id);const option=[...bench.options].find(option=>option.value===id);if(option){bench.value=id;drawPareto()}history.replaceState(null,'','#benchmark-'+id)}
 benchmarkTabs.forEach((tab,index)=>{tab.addEventListener('click',()=>selectBenchmark(tab.dataset.bench));tab.addEventListener('keydown',event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();const direction=event.key==='ArrowRight'?1:-1;const next=benchmarkTabs[(index+direction+benchmarkTabs.length)%benchmarkTabs.length];next.focus();selectBenchmark(next.dataset.bench)}})});
-document.querySelectorAll('.leader-table thead button').forEach(button=>button.addEventListener('click',()=>{const body=document.querySelector('.leader-table tbody');const rows=[...body.rows];const column=Number(button.dataset.column);rows.sort((a,b)=>Number(b.cells[column].dataset.score)-Number(a.cells[column].dataset.score));rows.forEach((row,index)=>{row.cells[0].textContent=index+1;body.append(row)})}));
-const svg=document.querySelector('#pareto'),bench=document.querySelector('#pareto-bench'),axis=document.querySelector('#pareto-x'),empty=document.querySelector('#pareto-empty'),paretoShell=document.querySelector('.pareto-shell');axis.remove();empty.textContent='No measured price per task for this benchmark.';
-function drawPareto(){const key=bench.value;const points=paretoData.map(model=>{const result=key==='overall'?model.overall:model.benchmarks[key];return result&&result.cost!=null?{name:model.name,score:result.score,x:result.cost}:null}).filter(Boolean).sort((a,b)=>a.x-b.x);svg.replaceChildren();empty.hidden=points.length>0;if(!points.length)return;const ns='http://www.w3.org/2000/svg',left=72,right=970,top=24,bottom=374,maxX=Math.max(...points.map(p=>p.x))*1.08||1;const sx=x=>left+x/maxX*(right-left),sy=y=>bottom-y/100*(bottom-top);const add=(tag,attrs,text)=>{const node=document.createElementNS(ns,tag);Object.entries(attrs).forEach(([k,v])=>node.setAttribute(k,v));if(text)node.textContent=text;svg.append(node);return node};add('line',{x1:left,y1:top,x2:left,y2:bottom,class:'chart-axis'});add('line',{x1:left,y1:bottom,x2:right,y2:bottom,class:'chart-axis'});[0,25,50,75,100].forEach(v=>{add('line',{x1:left,y1:sy(v),x2:right,y2:sy(v),class:'chart-grid'});add('text',{x:left-12,y:sy(v)+4,'text-anchor':'end',class:'chart-label'},v)});add('text',{x:(left+right)/2,y:420,'text-anchor':'middle',class:'chart-title'},'Average price per task (USD) →');add('text',{x:18,y:(top+bottom)/2,transform:`rotate(-90 18 ${(top+bottom)/2})`,'text-anchor':'middle',class:'chart-title'},'Score ↑');let best=-1;const frontier=points.filter(p=>{if(p.score>best){best=p.score;return true}return false});add('polyline',{points:frontier.map(p=>`${sx(p.x)},${sy(p.score)}`).join(' '),class:'frontier'});points.forEach(p=>{const group=add('g',{tabindex:'0',class:frontier.includes(p)?'chart-point frontier-point':'chart-point'});const circle=document.createElementNS(ns,'circle');circle.setAttribute('cx',sx(p.x));circle.setAttribute('cy',sy(p.score));circle.setAttribute('r',frontier.includes(p)?7:5);group.append(circle);const title=document.createElementNS(ns,'title');title.textContent=`${p.name}: ${p.score.toFixed(1)} score, $${p.x.toFixed(4)} / task`;group.append(title);const label=document.createElementNS(ns,'text');label.setAttribute('x',sx(p.x)+10);label.setAttribute('y',sy(p.score)-10);label.textContent=p.name;group.append(label)})}
-bench.addEventListener('change',drawPareto);const requested=location.hash.replace('#benchmark-','');if(benchmarkTabs.some(tab=>tab.dataset.bench===requested))selectBenchmark(requested);else drawPareto();if(!paretoData.some(model=>model.overall.cost!=null))paretoShell.hidden=true;
+document.querySelectorAll('.leader-table thead [data-column]').forEach(control=>control.addEventListener('click',event=>{event.preventDefault();const body=document.querySelector('.leader-table tbody');const rows=[...body.rows];const column=Number(control.dataset.column);rows.sort((a,b)=>Number(b.cells[column].dataset.score)-Number(a.cells[column].dataset.score));rows.forEach((row,index)=>{row.cells[0].textContent=index+1;body.append(row)})}));
+const svg=document.querySelector('#pareto'),bench=document.querySelector('#pareto-bench'),axis=document.querySelector('#pareto-x'),empty=document.querySelector('#pareto-empty');axis.remove();
+function drawPareto(){const key=bench.value;const points=paretoData.map(model=>{const result=key==='overall'?model.overall:model.benchmarks[key];return result&&result.cost!=null?{name:model.name,score:result.score,x:result.cost}:null}).filter(Boolean).sort((a,b)=>a.x-b.x);svg.replaceChildren();empty.hidden=points.length>0;svg.toggleAttribute('hidden',points.length===0);if(!points.length)return;const ns='http://www.w3.org/2000/svg',left=72,right=970,top=24,bottom=374,maxX=Math.max(...points.map(p=>p.x))*1.08||1;const sx=x=>left+x/maxX*(right-left),sy=y=>bottom-y/100*(bottom-top);const add=(tag,attrs,text)=>{const node=document.createElementNS(ns,tag);Object.entries(attrs).forEach(([k,v])=>node.setAttribute(k,v));if(text)node.textContent=text;svg.append(node);return node};add('line',{x1:left,y1:top,x2:left,y2:bottom,stroke:'currentColor','stroke-width':'2'});add('line',{x1:left,y1:bottom,x2:right,y2:bottom,stroke:'currentColor','stroke-width':'2'});[0,25,50,75,100].forEach(v=>{add('line',{x1:left,y1:sy(v),x2:right,y2:sy(v),stroke:'currentColor',opacity:'.15'});add('text',{x:left-12,y:sy(v)+4,'text-anchor':'end',fill:'currentColor'},v)});add('text',{x:(left+right)/2,y:420,'text-anchor':'middle',fill:'currentColor'},'Average price per task (USD) →');add('text',{x:18,y:(top+bottom)/2,transform:`rotate(-90 18 ${(top+bottom)/2})`,'text-anchor':'middle',fill:'currentColor'},'Score ↑');let best=-1;const frontier=points.filter(p=>{if(p.score>best){best=p.score;return true}return false});add('polyline',{points:frontier.map(p=>`${sx(p.x)},${sy(p.score)}`).join(' '),fill:'none',stroke:'var(--pico-primary)','stroke-width':'4'});points.forEach(p=>{const group=add('g',{tabindex:'0'});const circle=document.createElementNS(ns,'circle');circle.setAttribute('cx',sx(p.x));circle.setAttribute('cy',sy(p.score));circle.setAttribute('r',frontier.includes(p)?7:5);circle.setAttribute('fill','var(--pico-primary)');group.append(circle);const title=document.createElementNS(ns,'title');title.textContent=`${p.name}: ${p.score.toFixed(1)} score, $${p.x.toFixed(4)} / task`;group.append(title);const label=document.createElementNS(ns,'text');label.setAttribute('x',sx(p.x)+10);label.setAttribute('y',sy(p.score)-10);label.setAttribute('fill','currentColor');label.textContent=p.name;group.append(label)})}
+bench.addEventListener('change',drawPareto);const requested=location.hash.replace('#benchmark-','');if(benchmarkTabs.some(tab=>tab.dataset.bench===requested))selectBenchmark(requested);else drawPareto();
 "#;
 
-const CSS: &str = r#"
+// Pico CSS v2.1.1 provides the accessible, class-light UI foundation. It is
+// vendored so the tailnet viewer remains complete without public internet.
+// Source: https://github.com/picocss/pico (MIT)
+const CSS: &str = include_str!("../assets/pico.min.css");
+
+#[allow(dead_code)]
+const _REMOVED_CUSTOM_CSS: &str = concat!(
+    include_str!("../assets/pico.min.css"),
+    r#"
 :root{--paper:#f4f6f2;--surface:#fff;--ink:#202621;--muted:#687169;--rule:#c9d0c9;--pcb:#b94c21;--cad:#245fa3;--cam:#6e4f92;--dfm:#27715b;color-scheme:light}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 "Aptos","Helvetica Neue",Arial,sans-serif}.site-head{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:24px;padding:14px clamp(18px,4vw,56px);border-bottom:1px solid var(--rule);background:rgba(244,246,242,.96);backdrop-filter:blur(10px)}.wordmark{color:var(--ink);font-weight:800;letter-spacing:-.02em;text-decoration:none}.wordmark span{color:var(--muted);font-weight:500}.bench-switcher{display:flex;gap:3px;padding:3px;border:1px solid var(--rule);background:#e7ebe6}.bench-tab{display:flex;align-items:center;gap:7px;min-height:36px;padding:6px 10px;border:0;background:transparent;color:var(--muted);font:600 13px/1 inherit;cursor:pointer}.bench-tab[aria-selected=true]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px #1b281b1f}.bench-tab:disabled{cursor:not-allowed;opacity:.35}.bench-tab:focus-visible{outline:3px solid #111;outline-offset:2px}main{max-width:1440px;margin:auto;padding:clamp(28px,5vw,72px) clamp(18px,4vw,56px)}.bench-panel.pcb{--accent:var(--pcb)}.bench-panel.cad{--accent:var(--cad)}.bench-panel.cam{--accent:var(--cam)}.bench-panel.dfm{--accent:var(--dfm)}.hero{display:grid;grid-template-columns:minmax(280px,1fr) minmax(380px,1fr);gap:48px;align-items:end;padding-bottom:32px;border-bottom:3px solid var(--accent)}.identity{display:flex;align-items:center;gap:10px;margin:0 0 12px;color:var(--accent);font-size:18px;font-weight:750}.identity span{font-size:25px}.hero h1{margin:0;font-size:clamp(52px,9vw,112px);line-height:.82;letter-spacing:-.075em}.hero h1 small{display:block;margin-top:20px;color:var(--muted);font-size:16px;font-weight:550;letter-spacing:0}.hero dl{display:grid;grid-template-columns:repeat(4,1fr);margin:0}.hero dl div{padding:0 14px;border-left:1px solid var(--rule)}dt{color:var(--muted);font-size:12px}dd{margin:3px 0 0;font-size:24px;font-weight:750}.task-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:28px}.task{border:1px solid var(--rule);background:var(--surface)}.task.failed{border-left:4px solid #b7352d}.task.error{border-left:4px solid #b77719;padding:18px}.task details>summary{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:17px 18px;cursor:pointer;list-style:none}.task summary::-webkit-details-marker{display:none}.task summary span{display:flex;min-width:0;flex-direction:column}.task summary strong{overflow:hidden;text-overflow:ellipsis}.task summary small{color:var(--muted)}.task summary b{color:var(--accent);font-size:12px}.criteria{overflow:auto;border-top:1px solid var(--rule)}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;border-bottom:1px solid #e5e9e4;text-align:left;vertical-align:top}th{font-weight:650}td:last-child{color:var(--muted)}.verdict{display:inline-block;min-width:48px;font-size:12px;font-weight:750}.verdict.pass{color:#27715b}.verdict.fail{color:#b7352d}.verdict.human{color:#8b651c}.empty{display:grid;min-height:60vh;place-items:center;align-content:center;text-align:center}.empty span{font-size:52px;filter:grayscale(1)}.empty h1{margin:10px 0 0}.empty p{color:var(--muted)}[hidden]{display:none!important}@media(max-width:900px){.site-head{align-items:flex-start}.wordmark span{display:none}.bench-tab span:last-child{display:none}.hero{grid-template-columns:1fr}.hero dl{grid-template-columns:repeat(2,1fr);gap:16px}.task-list{grid-template-columns:1fr}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
-"#;
+"#,
+    r#"
+/* Product-specific composition on top of Pico's controls, typography, and states. */
+:root{--pico-font-family-sans-serif:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--pico-font-size:94%;--pico-border-radius:.7rem;--pico-primary:#3659db;--pico-primary-hover:#2946b9;--pico-primary-focus:rgba(54,89,219,.2);--paper:#f6f7fb;--surface:#fff;--ink:#18202b;--muted:#697386;--rule:#dfe3ea}
+body{background:linear-gradient(180deg,#fafbfe 0,#f4f6fa 280px);letter-spacing:-.005em}
+.site-head{background:rgba(255,255,255,.9);border-color:#e6e9ef;box-shadow:0 1px 0 rgba(23,31,44,.04);padding-block:11px}
+.wordmark{font-size:.93rem;letter-spacing:-.01em}.monitor-controls{display:flex;align-items:center;gap:.7rem}.monitor-controls button{width:auto;margin:0;padding:.42rem .72rem;font-size:.78rem}.monitor-controls label{display:flex;align-items:center;gap:.4rem;margin:0;font-size:.78rem}.monitor-controls input{margin:0}
+.benchmark-switcher,.bench-switcher{gap:4px;padding:4px;border:0;border-radius:.8rem;background:#eef1f6;box-shadow:inset 0 0 0 1px #e2e6ed}.benchmark-tab,.bench-tab{margin:0;border-radius:.55rem}.benchmark-tab[aria-selected=true],.bench-tab[aria-selected=true]{box-shadow:0 1px 2px rgba(25,35,55,.12),0 4px 12px rgba(25,35,55,.06)}
+main{padding-top:2.3rem}.leader-head{padding-bottom:1.4rem}.leader-head h1{font-size:clamp(2rem,4vw,3.15rem);font-weight:720;letter-spacing:-.045em}.leader-head>span{padding:.3rem .65rem;border:1px solid var(--rule);border-radius:999px;background:var(--surface);font-size:.75rem}
+.benchmark-primer-panel,.leader-wrap,.pareto-shell,.task,.prompt-copy,.standards-list,.model-stage{border:1px solid #e2e6ed;border-radius:.8rem;box-shadow:0 1px 2px rgba(20,29,43,.04),0 10px 28px rgba(20,29,43,.035);overflow:hidden}
+.benchmark-primer-panel{border-top-width:3px}.leader-wrap{border-top-width:1px}.leader-table thead th{background:#f7f8fb}.leader-table tbody tr:hover{background:#fafbfe}.leader-table tbody tr:last-child>*{border-bottom:0}
+.task details>summary{background:#fff}.task details[open]>summary{background:#fafbfe}.task summary b,.verdict,.result-mark{letter-spacing:.035em}.open-prompt{border:0;border-radius:.5rem;background:#eef2ff;color:#2946b9}
+.pareto-shell{padding:1.35rem}.pareto-shell select,.prompt-carousel select{margin:0}.evidence>header{border-bottom:1px solid var(--rule);padding-bottom:.7rem}.evidence h2{font-size:1.55rem}
+.prompt-carousel>a,.nav-disabled{border-radius:.55rem;background:var(--surface);box-shadow:0 1px 2px rgba(20,29,43,.05)}.prompt-head{border-bottom:1px solid var(--rule)}.prompt-head h1{font-size:clamp(1.8rem,4vw,3rem)}.run-verdict{border-radius:.65rem;box-shadow:0 1px 2px rgba(20,29,43,.06)}.standard-card{margin:0;border-radius:0;box-shadow:none}.evidence-copy{border-radius:.45rem}.model-stage canvas{background:radial-gradient(circle at 50% 42%,#28313b 0,#151a20 72%)}
+@media(max-width:900px){.site-head{padding-inline:1rem}.header-actions{margin-left:auto}.leader-head{align-items:flex-start;flex-direction:column}.benchmark-switcher,.bench-switcher{max-width:100%;overflow-x:auto}}
+"#
+);
 
-const LEADERBOARD_CSS: &str = concat!(
+const LEADERBOARD_CSS: &str = "";
+
+#[allow(dead_code)]
+const _REMOVED_LEADERBOARD_CSS: &str = concat!(
     r#"
 .leader-head{display:flex;align-items:end;justify-content:space-between;gap:24px;padding-bottom:24px}.leader-head h1{margin:0;font-size:clamp(38px,7vw,82px);letter-spacing:-.06em;line-height:.95}.leader-head p{margin:14px 0 0;color:var(--muted)}.leader-head>span{font-variant-numeric:tabular-nums;color:var(--muted)}.leader-wrap{overflow:auto;border-top:3px solid var(--ink);border-bottom:1px solid var(--ink);background:var(--surface)}.leader-table{min-width:920px;font-variant-numeric:tabular-nums}.leader-table th,.leader-table td{padding:15px 14px}.leader-table thead th{position:sticky;top:65px;z-index:2;background:var(--paper);color:var(--muted);font-size:12px}.leader-table thead button{border:0;background:none;color:inherit;font:inherit;font-weight:700;cursor:pointer}.leader-table tbody th{min-width:220px}.leader-table tbody th strong{display:block;font-size:16px}.leader-table small{display:block;color:var(--muted);font-weight:400}.leader-table td>a{color:inherit;text-decoration:none}.leader-table td>a:hover{text-decoration:underline}.rank{width:48px;color:var(--muted)}.missing-score{color:var(--muted);background:#f7f8f6}.missing-score span{font-weight:650}.missing-identity{color:#8b651c}.empty-row td{padding:36px;text-align:center;color:var(--muted)}.empty-row strong,.empty-row span{display:block}.primer-empty{max-width:760px;margin:14px 64px 24px;padding:16px;border:1px dashed var(--rule);color:var(--muted)}.primer-empty p{margin:4px 0 0}.specialty{min-width:190px;color:#76590c}.evidence{padding-top:72px;scroll-margin-top:64px}.evidence>header{display:flex;justify-content:space-between;align-items:end;border-bottom:3px solid var(--ink)}.evidence h2{margin:0;font-size:30px}.evidence p{color:var(--muted)}.evidence>header a{padding-bottom:14px;color:var(--ink)}
 "#,
@@ -690,25 +931,36 @@ const LEADERBOARD_CSS: &str = concat!(
     r#".leader-head h1{font-size:clamp(34px,5vw,54px);letter-spacing:-.045em;line-height:1}.open-prompt{display:inline-block;margin:16px 18px 0;padding:8px 11px;border:1px solid var(--ink);color:var(--ink);font-weight:700;text-decoration:none}"#
 );
 
-const PROMPT_PAGE_CSS: &str = r#"
+#[allow(dead_code)]
+const _REMOVED_PROMPT_PAGE_CSS: &str = r#"
+.material-chip.mismatch strong,.material-chip.mismatch span{color:#a33a32}
+.model-stage>header{display:flex;align-items:center;justify-content:space-between;gap:18px}.material-chip,.material-missing{display:flex;flex-direction:column;align-items:flex-end}.material-chip span,.material-missing span{font-size:11px;color:var(--muted)}.artifact-warning{margin:14px;padding:12px 14px;border:1px solid #d69e2e;border-radius:.55rem;background:#fff8df;color:#6d4d0b}.artifact-warning p{margin:3px 0 0}.run-verdict.warn{border-color:#d69e2e}.run-verdict.warn>strong{color:#8b651c}.standard-card.proxy .result-mark{background:#fff0bd;color:#76590c}#stl-viewer{position:relative;width:100%;height:min(66vh,680px);min-height:420px;background:radial-gradient(circle at 50% 42%,#28313b 0,#151a20 72%);overflow:hidden}#stl-viewer canvas{display:block;width:100%;height:100%}.model-loading,.model-error{position:absolute;inset:0;display:grid;place-content:center;padding:24px;text-align:center;color:#d9e0e7}.model-error p{margin:4px 0 0;color:#aeb8c2}
 .muted{color:var(--muted)}.prompt-page{max-width:1680px}.prompt-carousel{display:grid;grid-template-columns:120px minmax(240px,560px) 120px;align-items:end;justify-content:space-between;gap:18px;margin-bottom:28px}.prompt-carousel>a,.nav-disabled{padding:10px 12px;border:1px solid var(--rule);text-align:center;text-decoration:none;color:var(--ink)}.nav-disabled{color:var(--muted);opacity:.45}.prompt-carousel label{display:flex;flex-direction:column;gap:5px}.prompt-carousel label span{color:var(--muted);font-size:12px}.prompt-carousel select{width:100%;padding:10px;border:1px solid var(--rule);background:var(--surface);font:inherit}.prompt-head{display:flex;align-items:end;justify-content:space-between;gap:28px;padding-bottom:24px;border-bottom:3px solid var(--ink)}.prompt-head p{margin:0;color:var(--muted)}.prompt-head h1{max-width:900px;margin:5px 0 0;font-size:clamp(30px,5vw,62px);line-height:1;letter-spacing:-.045em;overflow-wrap:anywhere}.run-verdict{min-width:230px;padding:16px 18px;border-left:7px solid var(--rule);background:var(--surface)}.run-verdict strong,.run-verdict span,.run-verdict small{display:block}.run-verdict strong{font-size:22px}.run-verdict.pass{border-color:#27715b}.run-verdict.pass strong{color:#27715b}.run-verdict.fail,.run-verdict.error{border-color:#b7352d}.run-verdict.fail strong,.run-verdict.error strong{color:#b7352d}.run-verdict small{color:var(--muted)}.prompt-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(440px,.9fr);gap:28px;margin-top:28px}.prompt-copy,.standards-list,.model-stage{border:1px solid var(--rule);background:var(--surface)}.prompt-copy h2,.standards-list>header,.model-stage>header{margin:0;padding:15px 18px;border-bottom:1px solid var(--rule)}.prompt-copy pre{max-width:100%;margin:0;padding:20px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:15px/1.6 inherit}.standards-list{margin-top:18px}.standards-list>header h2,.model-stage h2{margin:0}.standards-list>header p,.model-stage header span{color:var(--muted)}.standard-card{padding:17px 18px;border-bottom:1px solid var(--rule)}.standard-card:last-child{border-bottom:0}.standard-card>header{display:flex;gap:14px;align-items:start}.standard-card h3{margin:0;font-size:17px}.standard-card code{color:var(--muted)}.standard-card>p{margin:10px 0}.result-mark{min-width:64px;padding:3px 7px;text-align:center;font-size:11px;font-weight:800}.standard-card.pass .result-mark{background:#dcebe4;color:#176345}.standard-card.fail .result-mark{background:#f2ddda;color:#9f2924}.standard-card.human .result-mark{background:#f1e8cf;color:#76590c}.evidence-copy{padding:11px 13px;background:var(--paper)}.evidence-copy strong{font-size:11px;text-transform:uppercase;letter-spacing:.07em}.evidence-copy p{margin:3px 0}.model-stage{position:sticky;top:84px;align-self:start}.model-stage canvas{display:block;width:100%;height:min(66vh,680px);background:#181c1a;cursor:grab}.model-stage canvas:active{cursor:grabbing}.model-tools{display:flex;justify-content:space-between;gap:16px;padding:11px 14px;color:var(--muted);font-size:12px}.model-tools a{color:var(--ink)}.model-empty,.empty-detail{margin:18px;padding:18px;border:1px dashed var(--rule);color:var(--muted)}.model-empty p,.empty-detail p{margin:4px 0 0}@media(max-width:980px){.prompt-layout{grid-template-columns:1fr}.model-stage{position:static;grid-row:1}.model-stage canvas{height:52vh}}@media(max-width:620px){.prompt-carousel{grid-template-columns:1fr 1fr}.prompt-carousel label{grid-column:1/-1;grid-row:1}.prompt-head{align-items:stretch;flex-direction:column}.run-verdict{min-width:0}}
 "#;
 
 const PROMPT_PAGE_JS: &str = r#"
 document.querySelector('#prompt-select').addEventListener('change',event=>location.href=event.target.value);
-const canvas=document.querySelector('#stl-viewer');
-if(canvas){const context=canvas.getContext('2d');let triangles=[],rx=-.55,ry=.65,zoom=1,drag=false,lastX=0,lastY=0;
-const vector=(view,offset)=>[view.getFloat32(offset,true),view.getFloat32(offset+4,true),view.getFloat32(offset+8,true)];
-function parse(buffer){const view=new DataView(buffer),count=buffer.byteLength>=84?view.getUint32(80,true):0;if(84+count*50===buffer.byteLength){for(let i=0;i<count;i++){const base=84+i*50;triangles.push([vector(view,base+12),vector(view,base+24),vector(view,base+36)])}}else{const text=new TextDecoder().decode(buffer),vertices=[...text.matchAll(/vertex\s+([\-\d.e+]+)\s+([\-\d.e+]+)\s+([\-\d.e+]+)/gi)].map(match=>[+match[1],+match[2],+match[3]]);for(let i=0;i+2<vertices.length;i+=3)triangles.push(vertices.slice(i,i+3))}fit();draw()}
-function fit(){const values=triangles.flat(2),xs=values.filter((_,i)=>i%3===0),ys=values.filter((_,i)=>i%3===1),zs=values.filter((_,i)=>i%3===2),cx=(Math.min(...xs)+Math.max(...xs))/2,cy=(Math.min(...ys)+Math.max(...ys))/2,cz=(Math.min(...zs)+Math.max(...zs))/2,extent=Math.max(Math.max(...xs)-Math.min(...xs),Math.max(...ys)-Math.min(...ys),Math.max(...zs)-Math.min(...zs))||1;triangles=triangles.map(triangle=>triangle.map(vertex=>[(vertex[0]-cx)/extent,(vertex[1]-cy)/extent,(vertex[2]-cz)/extent]))}
-function rotate(vertex){let[x,y,z]=vertex,cy=Math.cos(ry),sy=Math.sin(ry),cx=Math.cos(rx),sx=Math.sin(rx),x1=x*cy+z*sy,z1=-x*sy+z*cy;return[x1,y*cx-z1*sx,y*sx+z1*cx]}
-function draw(){const ratio=devicePixelRatio||1,w=canvas.clientWidth,h=canvas.clientHeight;canvas.width=w*ratio;canvas.height=h*ratio;context.setTransform(ratio,0,0,ratio,0,0);context.clearRect(0,0,w,h);const scale=Math.min(w,h)*.78*zoom,project=vertex=>{const p=rotate(vertex);return{x:w/2+p[0]*scale,y:h/2-p[1]*scale,z:p[2]}};const faces=triangles.map(triangle=>triangle.map(project)).sort((a,b)=>a.reduce((s,p)=>s+p.z,0)-b.reduce((s,p)=>s+p.z,0));faces.forEach(face=>{const ax=face[1].x-face[0].x,ay=face[1].y-face[0].y,bx=face[2].x-face[0].x,by=face[2].y-face[0].y,light=Math.max(.16,Math.min(.92,.48+(ax*by-ay*bx)/Math.max(1,Math.abs(ax*by-ay*bx))*.24));context.beginPath();context.moveTo(face[0].x,face[0].y);context.lineTo(face[1].x,face[1].y);context.lineTo(face[2].x,face[2].y);context.closePath();context.fillStyle=`rgb(${70+light*90},${82+light*100},${76+light*92})`;context.fill();context.strokeStyle='#242b27';context.lineWidth=.35;context.stroke()})}
-canvas.addEventListener('pointerdown',event=>{drag=true;lastX=event.clientX;lastY=event.clientY;canvas.setPointerCapture(event.pointerId)});canvas.addEventListener('pointermove',event=>{if(!drag)return;ry+=(event.clientX-lastX)*.01;rx+=(event.clientY-lastY)*.01;lastX=event.clientX;lastY=event.clientY;draw()});canvas.addEventListener('pointerup',()=>drag=false);canvas.addEventListener('wheel',event=>{event.preventDefault();zoom=Math.max(.35,Math.min(4,zoom*Math.exp(-event.deltaY*.001)));draw()},{passive:false});addEventListener('resize',draw);fetch(canvas.dataset.src).then(response=>response.arrayBuffer()).then(parse).catch(()=>{canvas.replaceWith(Object.assign(document.createElement('p'),{textContent:'STL could not be loaded.'}))})}
+const host=document.querySelector('#stl-viewer');
+if(host){try{
+const THREE=await import('https://esm.sh/three@0.180.0');
+const {STLLoader}=await import('https://esm.sh/three@0.180.0/examples/jsm/loaders/STLLoader.js');
+const {OrbitControls}=await import('https://esm.sh/three@0.180.0/examples/jsm/controls/OrbitControls.js');
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.15;host.replaceChildren(renderer.domElement);
+const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(36,1,.01,1000),controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.autoRotate=false;
+scene.add(new THREE.HemisphereLight(0xffffff,0x303842,2.1));const key=new THREE.DirectionalLight(0xffffff,3.2);key.position.set(3,4,5);scene.add(key);const rim=new THREE.DirectionalLight(0x9db8ff,1.8);rim.position.set(-4,1,-3);scene.add(rim);
+const geometry=await new STLLoader().loadAsync(host.dataset.src);geometry.computeVertexNormals();geometry.center();const bounds=new THREE.Box3().setFromBufferAttribute(geometry.attributes.position),size=bounds.getSize(new THREE.Vector3()),radius=Math.max(size.x,size.y,size.z)/2||1;
+const material=new THREE.MeshStandardMaterial({color:new THREE.Color(host.dataset.color),metalness:Number(host.dataset.metalness),roughness:Number(host.dataset.roughness)}),mesh=new THREE.Mesh(geometry,material);mesh.rotation.x=-Math.PI/2;scene.add(mesh);camera.position.set(radius*2.4,radius*1.7,radius*2.4);camera.near=radius/100;camera.far=radius*100;camera.updateProjectionMatrix();controls.target.set(0,0,0);controls.minDistance=radius*.6;controls.maxDistance=radius*8;
+const resize=()=>{const w=host.clientWidth,h=Math.min(Math.max(Math.round(w*.62),360),620);renderer.setSize(w,h,true);camera.aspect=w/h;camera.updateProjectionMatrix()};new ResizeObserver(resize).observe(host);resize();host.removeAttribute('aria-busy');renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera)});
+}catch(error){console.error(error);host.innerHTML='<div class=model-error><strong>STL preview unavailable</strong><p>The artifact is still available from the download link below.</p></div>'}}
 "#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        CriterionResult, DatasetSplit, Difficulty, ScoreReport, SuiteTaskResult, TaskMetadata,
+    };
+    use std::path::PathBuf;
 
     #[test]
     fn switcher_has_all_disciplines_and_disables_missing_reports() {
@@ -726,8 +978,79 @@ mod tests {
     fn leaderboard_explains_missing_data_and_keeps_all_benchmarks_selectable() {
         let html = render_leaderboard(&[], &[]);
         assert_eq!(html.matches("class=benchmark-tab").count(), 4);
-        assert_eq!(html.matches("Description not recorded").count(), 4);
+        assert_eq!(html.matches("Benchmark definition not recorded").count(), 4);
         assert!(html.contains("No benchmark configurations recorded"));
+        assert!(html.contains("Price / score frontier"));
+        assert!(html.contains("Come back soon."));
+        assert!(!html.contains("Specialties"));
+        assert!(html.contains("data-column=4>⚡ PCB"));
+        assert!(html.contains("data-column=5>📐 CAD"));
+        assert!(html.contains("data-column=6>⚙️ CAM"));
+        assert!(html.contains("data-column=7>🏭 DFM"));
         assert!(!html.contains("class='bench-primer"));
+    }
+
+    #[test]
+    fn leaderboard_renders_readme_backed_benchmark_content() {
+        let primers = [BenchmarkPrimer {
+            kind: BenchmarkKind::Cad,
+            html: "<h2>What it tests</h2><p>Parametric mechanical reasoning.</p>".to_owned(),
+        }];
+        let html = render_leaderboard(&[], &primers);
+        assert!(html.contains("Parametric mechanical reasoning."));
+        assert_eq!(html.matches("Parametric mechanical reasoning.").count(), 1);
+    }
+
+    #[test]
+    fn prompt_page_shows_rigor_metadata_and_score_semantics() {
+        let metadata = TaskMetadata {
+            capabilities: vec!["geometry.true-surfaces".into()],
+            difficulty: Difficulty::Adversarial,
+            source: Some("synthetic:surface-mutant".into()),
+            oracle_version: "step-surface-v1".into(),
+            split: DatasetSplit::Validation,
+            expected_failure_modes: vec!["faceted-cylinder".into()],
+        };
+        let suite = SuiteReport {
+            schema: "eval.suite-report.v1".into(),
+            tasks_dir: PathBuf::from("tasks"),
+            results_dir: PathBuf::from("results"),
+            total: 1,
+            passed: 1,
+            failed: 0,
+            errors: 0,
+            needs_human: 0,
+            tasks: vec![SuiteTaskResult {
+                task_file: PathBuf::from("missing-task.toml"),
+                work_dir: PathBuf::from("missing-results"),
+                task_metadata: Some(metadata),
+                metadata_error: None,
+                elapsed_ms: 1,
+                report: Some(ScoreReport {
+                    task_id: "surface-mutant".into(),
+                    backend: "transmog".into(),
+                    results: vec![CriterionResult {
+                        id: "surfaces".into(),
+                        description: "uses true cylinders".into(),
+                        verdict: Verdict::Pass,
+                        detail: "artifact contains 4 cylindrical surfaces".into(),
+                    }],
+                }),
+                error: None,
+            }],
+        };
+        let html = render_prompt_page("model", "Model", "transmog", BenchmarkKind::Cad, &suite, 0)
+            .expect("prompt page");
+        for expected in [
+            "Rigor ledger",
+            "geometry.true-surfaces",
+            "step-surface-v1",
+            "faceted-cylinder",
+            "capability-macro reporting",
+            "do not award points",
+            "1/1 deterministic",
+        ] {
+            assert!(html.contains(expected), "missing {expected}");
+        }
     }
 }

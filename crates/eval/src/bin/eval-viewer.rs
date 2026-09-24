@@ -197,7 +197,14 @@ fn benchmark_kind(id: &str) -> Option<BenchmarkKind> {
 }
 
 fn readme_primer(markdown: &str, selected: &[String]) -> String {
-    let lines = markdown.lines().collect::<Vec<_>>();
+    let lines = markdown
+        .lines()
+        .filter(|line| {
+            !line.contains("[![")
+                && !line.contains("Badge numbers are generated")
+                && !line.contains("scripts/update-badges.sh")
+        })
+        .collect::<Vec<_>>();
     let mut excerpt = Vec::new();
     let intro_start = lines
         .iter()

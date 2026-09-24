@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ScoreReport, Verdict};
+use crate::{ScoreReport, TaskMetadata, Verdict};
 
 /// Stable schema written for every suite execution.
 pub const SUITE_REPORT_SCHEMA: &str = "eval.suite-report.v1";
@@ -43,6 +43,13 @@ impl SuiteReport {
 pub struct SuiteTaskResult {
     pub task_file: PathBuf,
     pub work_dir: PathBuf,
+    /// Governance metadata copied into the portable result artifact. The
+    /// viewer must not depend on the original task checkout still existing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_metadata: Option<TaskMetadata>,
+    /// Present when a task declared metadata that could not be decoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_error: Option<String>,
     #[serde(default)]
     pub elapsed_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,6 +140,7 @@ where
     let mut tasks = Vec::with_capacity(total);
     write_suite_report(&tasks_dir, &results_dir, total, &tasks)?;
     for task_file in task_files {
+        let (task_metadata, metadata_error) = read_task_metadata(&task_file);
         let stem = task_file
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -142,6 +150,8 @@ where
             tasks.push(SuiteTaskResult {
                 task_file,
                 work_dir,
+                task_metadata,
+                metadata_error,
                 elapsed_ms: 0,
                 report: None,
                 error: Some(format!("creating task work directory: {error}")),
@@ -159,6 +169,8 @@ where
                 tasks.push(SuiteTaskResult {
                     task_file,
                     work_dir,
+                    task_metadata,
+                    metadata_error,
                     elapsed_ms: started.elapsed().as_millis(),
                     report: Some(report),
                     error: None,
@@ -167,6 +179,8 @@ where
             Err(error) => tasks.push(SuiteTaskResult {
                 task_file,
                 work_dir,
+                task_metadata,
+                metadata_error,
                 elapsed_ms: started.elapsed().as_millis(),
                 report: None,
                 error: Some(error.to_string()),
@@ -176,6 +190,23 @@ where
     }
 
     write_suite_report(&tasks_dir, &results_dir, total, &tasks)
+}
+
+fn read_task_metadata(path: &Path) -> (Option<TaskMetadata>, Option<String>) {
+    let value = match std::fs::read_to_string(path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| toml::from_str::<toml::Value>(&text).map_err(|error| error.to_string()))
+    {
+        Ok(value) => value,
+        Err(error) => return (None, Some(error)),
+    };
+    let Some(metadata) = value.get("metadata").cloned() else {
+        return (None, None);
+    };
+    match metadata.try_into::<TaskMetadata>() {
+        Ok(metadata) => (Some(metadata), None),
+        Err(error) => (None, Some(error.to_string())),
+    }
 }
 
 fn write_suite_report(
@@ -282,6 +313,34 @@ mod tests {
         assert!(results.join("a/report.json").is_file());
         assert!(results.join("suite-report.json").is_file());
         assert!(!suite.all_automated_pass());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn suite_artifact_embeds_task_governance_metadata() {
+        let root = scratch();
+        let task = root.join("task.toml");
+        std::fs::write(
+            &task,
+            r#"
+            id = "t"
+            family = "f"
+            brief = "b"
+            [metadata]
+            capabilities = ["electrical.function"]
+            difficulty = "advanced"
+            source = "synthetic:mutant"
+            oracle_version = "spice-v1"
+            split = "validation"
+            expected_failure_modes = ["no-gain-compression"]
+            "#,
+        )
+        .unwrap();
+        let (metadata, error) = read_task_metadata(&task);
+        assert!(error.is_none());
+        let metadata = metadata.expect("embedded metadata");
+        assert_eq!(metadata.capabilities, ["electrical.function"]);
+        assert_eq!(metadata.oracle_version, "spice-v1");
         std::fs::remove_dir_all(root).unwrap();
     }
 }
