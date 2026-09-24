@@ -63,6 +63,7 @@
 
 mod backend;
 mod leaderboard;
+mod models;
 mod protocol;
 mod score;
 mod suite;
@@ -74,6 +75,7 @@ pub use backend::Backend;
 pub use leaderboard::{
     BenchmarkResultIndex, BenchmarkSource, LEADERBOARD_SCHEMA, LeaderboardIndex, ModelResultIndex,
 };
+pub use models::ModelSelection;
 pub use protocol::{ProtocolError, RunBudget, RunProtocol, SamplingParameters, TrialObservation};
 pub use score::{
     CapabilityScore, CriterionResult, ScoreComposition, ScoreReport, Verdict, scores_by_capability,
