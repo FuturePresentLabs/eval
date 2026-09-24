@@ -1,0 +1,7 @@
+{
+  "schema": "eval.result-catalog.v1",
+  "bundles": [
+    { "id": "cadbench-model-a", "url": "model-a.json" },
+    { "id": "cadbench-model-b", "url": "model-b.json" }
+  ]
+}

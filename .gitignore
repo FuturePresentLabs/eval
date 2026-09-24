@@ -1,3 +1,6 @@
 /target
+/viewer/node_modules
+/viewer/dist
+/viewer/chart-artifacts
 *.swp
 .DS_Store
