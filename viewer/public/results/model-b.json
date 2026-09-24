@@ -1,0 +1,22 @@
+{
+  "schema": "eval.result-bundle.v1",
+  "id": "cadbench-model-b-2026-09-24",
+  "generated_at": "2026-09-24T06:30:00Z",
+  "benchmark": { "id": "cadbench", "version": "2026.09", "title": "CADBench" },
+  "subject": { "kind": "model", "provider": "FPL", "name": "Model B", "revision": "2026-09-23" },
+  "provenance": { "harness_commit": "4b77600eaf1", "task_set_commit": "9c01f34ac77", "scorer": "cadbench-objective-v2", "source_url": "./results/model-b.json" },
+  "metrics": [
+    { "id": "pass_rate", "label": "Automated pass rate", "unit": "ratio", "goal": "maximize", "aggregation": "mean" },
+    { "id": "latency", "label": "Median latency", "unit": "seconds", "goal": "minimize", "aggregation": "median" },
+    { "id": "cost", "label": "Mean run cost", "unit": "USD", "goal": "minimize", "aggregation": "mean" }
+  ],
+  "observations": [
+    { "metric_id": "pass_rate", "value": 0.79, "sample_count": 24, "lower_bound": 0.69, "upper_bound": 0.87, "run_ids": ["b-01", "b-02"], "task_ids": ["bracket", "enclosure"] },
+    { "metric_id": "latency", "value": 31.4, "sample_count": 24, "run_ids": ["b-01", "b-02"], "task_ids": ["bracket", "enclosure"] },
+    { "metric_id": "cost", "value": 0.11, "sample_count": 24, "run_ids": ["b-01", "b-02"] }
+  ],
+  "runs": [
+    { "id": "b-01", "task_id": "bracket", "trial": 1, "duration_ms": 29800, "cost_usd": 0.10 },
+    { "id": "b-02", "task_id": "enclosure", "trial": 1, "duration_ms": 33000, "cost_usd": 0.12 }
+  ]
+}

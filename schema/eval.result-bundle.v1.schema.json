@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fpl.dev/schemas/eval.result-bundle.v1.schema.json",
+  "title": "FPL eval result bundle v1",
+  "type": "object",
+  "required": ["schema", "id", "generated_at", "benchmark", "subject", "provenance", "metrics", "observations", "runs"],
+  "properties": {
+    "schema": { "const": "eval.result-bundle.v1" },
+    "id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "benchmark": {
+      "type": "object", "required": ["id", "version"],
+      "properties": { "id": { "type": "string" }, "version": { "type": "string" }, "title": { "type": "string" } },
+      "additionalProperties": false
+    },
+    "subject": { "$ref": "#/$defs/subject" },
+    "provenance": {
+      "type": "object", "required": ["harness_commit", "task_set_commit"],
+      "properties": { "harness_commit": { "type": "string" }, "task_set_commit": { "type": "string" }, "scorer": { "type": "string" }, "source_url": { "type": "string", "format": "uri-reference" } },
+      "additionalProperties": false
+    },
+    "metrics": { "type": "array", "items": { "$ref": "#/$defs/metric" } },
+    "observations": { "type": "array", "items": { "$ref": "#/$defs/observation" } },
+    "runs": { "type": "array", "items": { "$ref": "#/$defs/run" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "subject": {
+      "type": "object", "required": ["kind", "provider", "name", "revision"],
+      "properties": { "kind": { "type": "string" }, "provider": { "type": "string" }, "name": { "type": "string" }, "revision": { "type": "string" } }, "additionalProperties": false
+    },
+    "metric": {
+      "type": "object", "required": ["id", "label", "unit", "goal", "aggregation"],
+      "properties": { "id": { "type": "string" }, "label": { "type": "string" }, "unit": { "type": "string" }, "goal": { "enum": ["minimize", "maximize"] }, "aggregation": { "type": "string" } }, "additionalProperties": false
+    },
+    "observation": {
+      "type": "object", "required": ["metric_id", "value", "sample_count", "run_ids"],
+      "properties": { "metric_id": { "type": "string" }, "value": { "type": "number" }, "sample_count": { "type": "integer", "minimum": 1 }, "lower_bound": { "type": "number" }, "upper_bound": { "type": "number" }, "run_ids": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "task_ids": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false
+    },
+    "run": {
+      "type": "object", "required": ["id", "task_id", "trial"],
+      "properties": { "id": { "type": "string" }, "task_id": { "type": "string" }, "trial": { "type": "integer", "minimum": 0 }, "started_at": { "type": "string", "format": "date-time" }, "duration_ms": { "type": "integer", "minimum": 0 }, "cost_usd": { "type": "number", "minimum": 0 }, "score": { "type": "object" }, "artifacts": { "type": "array", "items": { "type": "object", "required": ["name", "media_type", "url"], "properties": { "name": { "type": "string" }, "media_type": { "type": "string" }, "url": { "type": "string", "format": "uri-reference" }, "sha256": { "type": "string" } }, "additionalProperties": false } }, "additionalProperties": false
+    }
+  }
+}
