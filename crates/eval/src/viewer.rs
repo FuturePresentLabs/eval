@@ -615,12 +615,19 @@ fn design_decisions(work_dir: &std::path::Path) -> String {
         let drip = value.get("drip_angle_deg").and_then(|v| v.as_f64()).map_or("—".into(), |v| format!("{v:.1}°"));
         format!("<article><header><h3>Ingress constraints · deterministic</h3></header><p><strong>{}</strong><br>{}</p><dl><dt>Solid probe</dt><dd>{probe}</dd><dt>Water angle</dt><dd>{drip}</dd></dl></article>", esc(code), esc(sealed))
     }).unwrap_or_default();
+    let fastener = recipe_context.as_ref().and_then(|value| value.pointer("/standards/fastener")).map(|value| {
+        let designation = value.get("designation").and_then(|v| v.as_str()).unwrap_or("Not recorded");
+        let series = value.get("clearance_series").and_then(|v| v.as_str()).unwrap_or("Not recorded");
+        let standard = value.get("standard").and_then(|v| v.as_str()).unwrap_or("Not recorded");
+        let hole = value.get("clearance_hole_mm").and_then(|v| v.as_f64()).map_or("—".into(), |v| format!("⌀{v:.3} mm"));
+        format!("<article><header><h3>Fastener clearance · deterministic</h3></header><p><strong>{}</strong><br>{} series · {}</p><dl><dt>Resolved hole</dt><dd>{hole}</dd></dl></article>", esc(designation), esc(series), esc(standard))
+    }).unwrap_or_default();
     let composition = std::fs::read_to_string(work_dir.join("composition.json")).ok().and_then(|text| serde_json::from_str::<Vec<serde_json::Value>>(&text).ok()).filter(|calls| !calls.is_empty()).map(|calls| {
         let rows = calls.iter().map(|call| format!("<tr><td><code>{}</code></td><td>{}</td><td><code>{}</code></td></tr>", esc(call.get("tool").and_then(|v| v.as_str()).unwrap_or("Unknown")), call.get("body").and_then(|v| v.as_u64()).map_or("—".into(), |v| v.to_string()), esc(call.get("ip").and_then(|v| v.as_str()).unwrap_or("—")))).collect::<String>();
         format!("<section><h3>Recipe composition</h3><div class=overflow-auto><table class=striped><thead><tr><th>Lua tool</th><th>Body</th><th>Standard input</th></tr></thead><tbody>{rows}</tbody></table></div></section>")
     }).unwrap_or_default();
     format!(
-        "<section><h2>Design decisions</h2><div class=grid>{input}<article><header><h3>Geometry · RLCD</h3></header>{trace}</article>{ingress}</div>{composition}</section>"
+        "<section><h2>Design decisions</h2><div class=grid>{input}<article><header><h3>Geometry · RLCD</h3></header>{trace}</article>{ingress}{fastener}</div>{composition}</section>"
     )
 }
 
@@ -792,16 +799,17 @@ fn prompt_mentions_material(prompt: &str, material: &str) -> bool {
         .is_none_or(|(_, expected)| expected.iter().any(|alias| prompt.contains(alias)))
 }
 
-fn stl_rank(path: &std::path::Path) -> (u8, u64) {
+fn stl_rank(path: &std::path::Path) -> (u8, u8, u64) {
     let stem = path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("");
     if matches!(stem, "final" | "model" | "output") {
-        return (2, u64::MAX);
+        return (2, 0, u64::MAX);
     }
     (
         1,
+        u8::from(path.components().any(|part| part.as_os_str() == "assembly")),
         stem.strip_prefix("step-")
             .and_then(|value| value.parse().ok())
             .unwrap_or(0),
@@ -1370,7 +1378,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("recipe-context.json"),
-            r#"{"board":{"name":"Raspberry Pi 4 Model B"},"material":"ABS","ip":"IP65","standards":{"ingress":{"code":"IP65","sealed":true,"probe_mm":1.0}}}"#,
+            r#"{"board":{"name":"Raspberry Pi 4 Model B"},"material":"ABS","ip":"IP65","standards":{"ingress":{"code":"IP65","sealed":true,"probe_mm":1.0},"fastener":{"designation":"M2.5","clearance_series":"fine","clearance_hole_mm":2.7,"standard":"ISO 273:1979"}}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -1390,6 +1398,10 @@ mod tests {
             "Accepted",
             "Ingress constraints · deterministic",
             "Open vents forbidden",
+            "Fastener clearance · deterministic",
+            "M2.5",
+            "ISO 273:1979",
+            "⌀2.700 mm",
             "Recipe composition",
             "connector_cutouts",
         ] {
