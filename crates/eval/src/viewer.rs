@@ -594,6 +594,11 @@ fn artifact_inspector(
         let href = format!("/artifact/{model_id}/{}/{index}/{relative_text}", kind.id());
         if extension == "pdf" {
             views.push((format!("📄 {name}"), format!("<div class=inspection-stage><iframe src='{href}#view=FitH&toolbar=1&navpanes=0' title='{} PDF' loading=lazy></iframe></div><footer><span>Scroll normally through every page.</span><span><a href='{href}' target=_blank>Open separately</a> · <a href='{href}' download>Download PDF</a></span></footer>", esc(name))));
+        } else if extension == "glb" {
+            views.push((
+                format!("3D board · {name}"),
+                format!("<div class='inspection-stage glb-stage' data-glb-viewer data-src='{href}' aria-label='Interactive 3D board model' aria-busy=true>Loading board model…</div><footer><span>Drag to rotate · scroll to zoom.</span><a href='{href}' download>Download GLB</a></footer>"),
+            ));
         } else if matches!(extension, "png" | "jpg" | "jpeg" | "svg")
             && (lower.contains("schematic") || lower.contains("board") || lower.contains("pcb"))
         {
@@ -1003,7 +1008,7 @@ bench.addEventListener('change',drawPareto);const requested=location.hash.replac
 const CSS: &str = include_str!("../assets/pico.min.css");
 
 const PROMPT_INSPECTOR_CSS: &str = r#"
-.artifact-inspector>header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.artifact-inspector>header h2{margin-bottom:.15rem}.artifact-inspector>nav[role=tablist]{display:flex;gap:.45rem;overflow-x:auto;padding:.65rem 0;border-bottom:1px solid var(--pico-muted-border-color)}.artifact-inspector [role=tab]{width:auto;margin:0;padding:.55rem .85rem;white-space:nowrap}.artifact-inspector [role=tab][aria-selected=false]{background:transparent;color:var(--pico-muted-color)}.inspection-stage{min-height:620px;background:#151a20}.inspection-stage iframe{display:block;width:100%;height:min(78vh,980px);min-height:620px;border:0;background:#d7d9dc}.image-stage{display:grid;place-items:center;overflow:auto;padding:1rem;background:#30343a}.image-stage img{display:block;max-width:none;width:auto;min-width:min(100%,900px);height:auto}.artifact-inspector [role=tabpanel]>footer{display:flex;justify-content:space-between;gap:1rem;padding-top:.75rem}.artifact-inspector:fullscreen{overflow:auto;padding:1rem;background:var(--pico-background-color)}.artifact-inspector:fullscreen .inspection-stage,.artifact-inspector:fullscreen .inspection-stage iframe{height:calc(100vh - 11rem);min-height:0}.artifact-inspector:fullscreen #stl-viewer{height:calc(100vh - 11rem);min-height:0}@media(max-width:700px){.inspection-stage,.inspection-stage iframe{min-height:480px}.artifact-inspector [role=tabpanel]>footer{align-items:flex-start;flex-direction:column}}
+.artifact-inspector>header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.artifact-inspector>header h2{margin-bottom:.15rem}.artifact-inspector>nav[role=tablist]{display:flex;gap:.45rem;overflow-x:auto;padding:.65rem 0;border-bottom:1px solid var(--pico-muted-border-color)}.artifact-inspector [role=tab]{width:auto;margin:0;padding:.55rem .85rem;white-space:nowrap}.artifact-inspector [role=tab][aria-selected=false]{background:transparent;color:var(--pico-muted-color)}.inspection-stage{min-height:620px;background:#151a20}.inspection-stage iframe{display:block;width:100%;height:min(78vh,980px);min-height:620px;border:0;background:#d7d9dc}.image-stage{display:grid;place-items:center;overflow:auto;padding:1rem;background:#30343a}.image-stage img{display:block;max-width:none;width:auto;min-width:min(100%,900px);height:auto}.glb-stage canvas{display:block;width:100%;height:100%}.artifact-inspector [role=tabpanel]>footer{display:flex;justify-content:space-between;gap:1rem;padding-top:.75rem}.artifact-inspector:fullscreen{overflow:auto;padding:1rem;background:var(--pico-background-color)}.artifact-inspector:fullscreen .inspection-stage,.artifact-inspector:fullscreen .inspection-stage iframe{height:calc(100vh - 11rem);min-height:0}.artifact-inspector:fullscreen #stl-viewer{height:calc(100vh - 11rem);min-height:0}@media(max-width:700px){.inspection-stage,.inspection-stage iframe{min-height:480px}.artifact-inspector [role=tabpanel]>footer{align-items:flex-start;flex-direction:column}}
 "#;
 
 const SCORE_EXPLAINER_CSS: &str = r#"
@@ -1080,6 +1085,15 @@ const geometry=await new STLLoader().loadAsync(host.dataset.src);geometry.comput
 const material=new THREE.MeshStandardMaterial({color:new THREE.Color(host.dataset.color),metalness:Number(host.dataset.metalness),roughness:Number(host.dataset.roughness)}),mesh=new THREE.Mesh(geometry,material);mesh.rotation.x=-Math.PI/2;scene.add(mesh);camera.position.set(radius*2.4,radius*1.7,radius*2.4);camera.near=radius/100;camera.far=radius*100;camera.updateProjectionMatrix();controls.target.set(0,0,0);controls.minDistance=radius*.6;controls.maxDistance=radius*8;
 const resize=()=>{const w=host.clientWidth,h=Math.min(Math.max(Math.round(w*.62),360),620);renderer.setSize(w,h,true);camera.aspect=w/h;camera.updateProjectionMatrix()};new ResizeObserver(resize).observe(host);resize();host.removeAttribute('aria-busy');renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera)});
 }catch(error){console.error(error);host.innerHTML='<div class=model-error><strong>STL preview unavailable</strong><p>The artifact is still available from the download link below.</p></div>'}}
+for(const glbHost of document.querySelectorAll('[data-glb-viewer]')){try{
+const THREE=await import('https://esm.sh/three@0.180.0');
+const {GLTFLoader}=await import('https://esm.sh/three@0.180.0/examples/jsm/loaders/GLTFLoader.js');
+const {OrbitControls}=await import('https://esm.sh/three@0.180.0/examples/jsm/controls/OrbitControls.js');
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.15;glbHost.replaceChildren(renderer.domElement);
+const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(36,1,.01,1000),controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;scene.add(new THREE.HemisphereLight(0xffffff,0x303842,2.2));const key=new THREE.DirectionalLight(0xffffff,3);key.position.set(3,5,4);scene.add(key);
+const loaded=await new GLTFLoader().loadAsync(glbHost.dataset.src);scene.add(loaded.scene);const bounds=new THREE.Box3().setFromObject(loaded.scene),center=bounds.getCenter(new THREE.Vector3()),size=bounds.getSize(new THREE.Vector3()),radius=Math.max(size.x,size.y,size.z)/2||1;loaded.scene.position.sub(center);camera.position.set(radius*2.2,radius*1.8,radius*2.2);camera.near=radius/100;camera.far=radius*100;camera.updateProjectionMatrix();controls.minDistance=radius*.5;controls.maxDistance=radius*8;
+const resize=()=>{const w=glbHost.clientWidth,h=Math.min(Math.max(Math.round(w*.62),360),620);renderer.setSize(w,h,true);camera.aspect=w/h;camera.updateProjectionMatrix()};new ResizeObserver(resize).observe(glbHost);resize();glbHost.removeAttribute('aria-busy');renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera)});
+}catch(error){console.error(error);glbHost.innerHTML='<div class=model-error><strong>3D board preview unavailable</strong><p>The GLB remains available from the download link below.</p></div>'}}
 "#;
 
 #[cfg(test)]
@@ -1245,6 +1259,7 @@ mod tests {
             "drawing.pdf",
             "schematic.svg",
             "board-render.png",
+            "board.glb",
         ] {
             std::fs::write(root.join(name), b"fixture").unwrap();
         }
@@ -1263,6 +1278,8 @@ mod tests {
             "📄 drawing",
             "Schematic",
             "PCB layout",
+            "3D board · board",
+            "data-glb-viewer",
             "Scroll normally through every page.",
             "data-fullscreen-inspector",
             "role=tablist",
